@@ -710,22 +710,33 @@ def main():
 
     # --- Main Parser Setup ---
     parser = argparse.ArgumentParser(
-        description="A tool for managing and processing photo and video collections.",
-        epilog="Use 'photoflow.py <command> --help' for more information on a specific command."
+        description=(
+            "A tool for managing and processing photo and video collections.\n\n"
+            "The workflow is broken down into numbered phases (subcommands).\n"
+            "It is recommended to run them in order for a complete workflow, e.g.:\n"
+            "  1. 01-dedup         (Find and report duplicates)\n"
+            "  2. 02-timeshift     (Correct camera timestamps if needed)\n"
+            "  3. 03-pair-jpegs    (Separate RAW+JPEG pairs)\n"
+            "  4. 04-by-date       (Organize files into date-based folders)\n"
+            "  5. 05-geotag        (Add GPS data from GPX tracks)\n"
+            "  6. 06-to-develop    (Report on files needing development, e.g. RAW->TIF)"
+        ),
+        epilog="Use 'photoflow.py <command> --help' for more information on a specific command.",
+        formatter_class=argparse.RawTextHelpFormatter
     )
-    subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands")
+    subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands (phases)")
 
-    # --- dedup ---
+    # --- 01-dedup ---
     parser_dedup = subparsers.add_parser(
-        "dedup",
-        help="Finds duplicate files and files with naming conflicts."
+        "01-dedup",
+        help="Phase 1: Finds duplicate files and files with naming conflicts."
     )
     parser_dedup.set_defaults(func=handle_dedup)
 
-    # --- timeshift ---
+    # --- 02-timeshift ---
     parser_timeshift = subparsers.add_parser(
-        "timeshift",
-        help="Shifts EXIF timestamps for a batch of files."
+        "02-timeshift",
+        help="Phase 2: Shifts EXIF timestamps for a batch of files."
     )
     parser_timeshift.add_argument(
         "--offset",
@@ -734,24 +745,24 @@ def main():
     )
     parser_timeshift.set_defaults(func=handle_timeshift)
 
-    # --- pair-jpegs ---
+    # --- 03-pair-jpegs ---
     parser_pair_jpegs = subparsers.add_parser(
-        "pair-jpegs",
-        help="Identifies RAW+JPEG pairs and separates the JPEG file."
+        "03-pair-jpegs",
+        help="Phase 3: Identifies RAW+JPEG pairs and separates the JPEG file."
     )
     parser_pair_jpegs.set_defaults(func=handle_pair_jpegs)
 
-    # --- by-date ---
+    # --- 04-by-date ---
     parser_by_date = subparsers.add_parser(
-        "by-date",
-        help="Organizes files into a YYYY-MM-DD directory structure."
+        "04-by-date",
+        help="Phase 4: Organizes files into a YYYY-MM-DD directory structure."
     )
     parser_by_date.set_defaults(func=handle_by_date)
 
-    # --- geotag ---
+    # --- 05-geotag ---
     parser_geotag = subparsers.add_parser(
-        "geotag",
-        help="Applies GPS data to files from GPX tracks."
+        "05-geotag",
+        help="Phase 5: Applies GPS data to files from GPX tracks."
     )
     parser_geotag.add_argument(
         "--gpx-dir",
@@ -765,10 +776,10 @@ def main():
     )
     parser_geotag.set_defaults(func=handle_geotag)
 
-    # --- to-develop ---
+    # --- 06-to-develop ---
     parser_to_develop = subparsers.add_parser(
-        "to-develop",
-        help="Identifies folders that require further processing steps."
+        "06-to-develop",
+        help="Phase 6: Identifies folders that require further processing steps."
     )
     parser_to_develop.set_defaults(func=handle_to_develop)
 
