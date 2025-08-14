@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "photoflow"
+version = "1.0.0"
+description = "A command-line tool for managing and processing photo and video collections."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT License" }
+authors = [
+  { name = "Jules", email = "jules@example.com" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Graphics :: Media Management",
+]
+dependencies = [
+    "tqdm",
+]
+
+[project.scripts]
+photoflow = "photoflow:main"
