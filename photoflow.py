@@ -426,9 +426,8 @@ def handle_by_date(args, config):
         logger.info("DRY RUN: Would run exiftool to rename and move files from 'src' to 'by-date'.")
     else:
         try:
-            filename_format = f"-FileName<{by_date_dir.name}/%Y-%m-%d--%H-%M-%S%%-c.%%le"
-            date_format = "%Y:%m:%d %H:%M:%S"
-
+            filename_format = f"-FileName<{by_date_dir.name}" "/${DateTimeOriginal}"
+            date_format = "%Y-%m-%d--%H-%M-%S%%-c.%%le"
             subprocess.run(
                 ["exiftool", "-overwrite_original", "-P", "-r", "-d", date_format, filename_format, str(src_dir)],
                 capture_output=True, text=True, check=False
@@ -438,14 +437,15 @@ def handle_by_date(args, config):
 
     logger.info("Step 2: Moving files into daily subfolders...")
     if not any(by_date_dir.glob("*.*")):
-         logger.info("No files to organize into daily subfolders.")
+        logger.info("No files to organize into daily subfolders.")
     elif args.dry_run:
         logger.info("DRY RUN: Would run exiftool to move files into daily subfolders.")
     else:
         try:
-            directory_format = f"-Directory<{by_date_dir.name}/%Y-%m-%d"
+            directory_format = f"-Directory<{by_date_dir.name}" "/${DateTimeOriginal}"
+            date_format = "%Y-%m-%d"
             subprocess.run(
-                ["exiftool", "-overwrite_original", "-P", "-r", "-d", "%Y:%m:%d %H:%M:%S", directory_format, str(by_date_dir)],
+                ["exiftool", "-overwrite_original", "-P", "-r", "-d", date_format, directory_format, str(by_date_dir)],
                 capture_output=True, text=True, check=False
             )
         except (subprocess.SubprocessError, OSError) as e:
