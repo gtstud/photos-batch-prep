@@ -14,7 +14,6 @@ import logging
 import hashlib
 from collections import defaultdict
 import re
-import subprocess
 import shutil
 from datetime import datetime, timedelta
 from tqdm import tqdm
@@ -134,7 +133,7 @@ def handle_dedup(args, config):
 
     files_by_identity = defaultdict(list)
     for info in file_data:
-        key = (info["name"], info["size"], info["checksum"])
+        key = (info["size"], info["checksum"])
         files_by_identity[key].append(info)
 
     duplicates_found = 0
