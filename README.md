@@ -5,7 +5,7 @@
 ## Features
 
 - **All-in-One Tool:** A single script, `photoflow`, provides access to all workflow stages.
-- **Phased Workflow:** Functionality is broken down into clearly numbered subcommands (e.g., `01-dedup`, `02-timeshift`) to guide the user through the process.
+- **Phased Workflow:** Functionality is broken down into clearly named subcommands (e.g., `dedup`, `timeshift`) that follow a logical, numbered sequence to guide the user through the process.
 - **Safe by Design:**
     - **Dry Run Mode:** A global `--dry-run` flag allows you to preview all changes without modifying any files.
     - **Safe Deletion:** Duplicates are moved to a trash folder, not deleted directly.
@@ -50,10 +50,10 @@ When run with no command, it now correctly displays a detailed help message expl
 photoflow
 
 # Get help for a specific command
-photoflow 05-geotag --help
+photoflow geotag --help
 
 # Do a dry run of the 'by-date' command to see what it would do
-photoflow 04-by-date --dry-run
+photoflow by-date --dry-run
 ```
 
 ## Global Options
@@ -85,53 +85,53 @@ A default configuration looks like this:
 
 The tool is designed around a logical, numbered workflow. Here are the main commands:
 
-### 1. `01-dedup`
+### 1. `dedup`
 Finds duplicate files.
 - **What it does:** Scans for files that have identical content (based on size and checksum, regardless of filename). The first-found file is kept, and subsequent duplicates are moved to a trash directory (`_duplicates_trash` by default). It also generates a report for files with the same name but different content.
 
 ```bash
-photoflow 01-dedup
+photoflow dedup
 ```
 
-### 2. `02-timeshift`
+### 2. `timeshift`
 Corrects the EXIF timestamps on your photos if the camera clock was wrong.
 - **Usage:** Provide a time shift using simple flags or an advanced offset string.
-  - To add 1 day and 2 hours: `photoflow 02-timeshift --days 1 --hours 2`
-  - To subtract 30 minutes: `photoflow 02-timeshift --minutes -30`
+  - To add 1 day and 2 hours: `photoflow timeshift --days 1 --hours 2`
+  - To subtract 30 minutes: `photoflow timeshift --minutes -30`
 - **Advanced Usage:** You can also provide a raw `exiftool` offset string. For example, to add 1 hour and 30 minutes:
 ```bash
-photoflow 02-timeshift --offset "+=0:0:0 1:30:0"
+photoflow timeshift --offset "+=0:0:0 1:30:0"
 ```
 
-### 3. `03-pair-jpegs`
+### 3. `pair-jpegs`
 For RAW+JPEG shooters, this command separates the "extra" JPEGs.
 - **What it does:** Finds RAW/JPEG pairs, verifies them, and moves the JPEG to an `_extra_jpgs` folder.
 
 ```bash
-photoflow 03-pair-jpegs
+photoflow pair-jpegs
 ```
 
-### 4. `04-by-date`
+### 4. `by-date`
 Organizes your cleaned-up files into a neat, date-based folder structure.
 - **What it does:** Moves all your photos and videos into a `by-date/YYYY-MM-DD/` directory structure.
 
 ```bash
-photoflow 04-by-date
+photoflow by-date
 ```
 
-### 5. `05-geotag`
+### 5. `geotag`
 Applies GPS coordinates to your photos using a GPX track log.
 - **Safety Feature:** This command automatically detects and **skips** any files that are already geotagged. It **will not** overwrite existing GPS data.
 - **Usage:**
 
 ```bash
-photoflow 05-geotag --gpx-dir /path/to/gpx-files --timezone -05:00
+photoflow geotag --gpx-dir /path/to/gpx-files --timezone -05:00
 ```
 
-### 6. `06-to-develop`
+### 6. `to-develop`
 For advanced workflows (e.g., RAW -> TIF -> JPG), this command identifies what work is left to do.
 - **What it does:** Scans your folders and reports which RAW files are missing a TIF, and which TIF files are missing a final standard JPEG.
 
 ```bash
-photoflow 06-to-develop
+photoflow to-develop
 ```

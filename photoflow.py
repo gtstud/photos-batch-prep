@@ -843,14 +843,14 @@ def main():
             "A tool for managing and processing photo and video collections.\n\n"
             "The workflow is broken down into numbered phases (subcommands).\n"
             "It is recommended to run them in order for a complete workflow, e.g.:\n"
-            "  1. 1-dedup         (Find and report duplicates)\n"
-            "  2. 2-timeshift     (Correct camera timestamps if needed)\n"
-            "  3. 3-pair-jpegs    (Separate RAW+JPEG pairs)\n"
-            "  4. 4-by-date       (Organize files into date-based folders)\n"
-            "  5. 5-geotag        (Add GPS data from GPX tracks)\n"
-            "  6. 6-to-develop    (Report on files needing development, e.g. RAW->TIF)"
+            "  1. dedup         (Find and report duplicates)\n"
+            "  2. timeshift     (Correct camera timestamps if needed)\n"
+            "  3. pair-jpegs    (Separate RAW+JPEG pairs)\n"
+            "  4. by-date       (Organize files into date-based folders)\n"
+            "  5. geotag        (Add GPS data from GPX tracks)\n"
+            "  6. to-develop    (Report on files needing development, e.g. RAW->TIF)"
         ),
-        epilog="Use 'photoflow.py <command> --help' for more information on a specific command.",
+        epilog="Use 'photoflow <command> --help' for more information on a specific command.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug output.")
@@ -860,14 +860,14 @@ def main():
 
     # --- 1-dedup ---
     parser_dedup = subparsers.add_parser(
-        "1-dedup",
+        "dedup",
         help="Phase 1: Finds duplicate files and files with naming conflicts."
     )
     parser_dedup.set_defaults(func=handle_dedup)
 
     # --- 2-timeshift ---
     parser_timeshift = subparsers.add_parser(
-        "2-timeshift",
+        "timeshift",
         help="Phase 2: Shifts EXIF timestamps for a batch of files.",
         description="Corrects camera timestamps. You can specify the shift using --offset for advanced use, "
                     "or with user-friendly flags like --hours and --minutes for simpler adjustments.",
@@ -888,21 +888,21 @@ def main():
 
     # --- 3-pair-jpegs ---
     parser_pair_jpegs = subparsers.add_parser(
-        "3-pair-jpegs",
+        "pair-jpegs",
         help="Phase 3: Identifies RAW+JPEG pairs and separates the JPEG file."
     )
     parser_pair_jpegs.set_defaults(func=handle_pair_jpegs)
 
     # --- 4-by-date ---
     parser_by_date = subparsers.add_parser(
-        "4-by-date",
+        "by-date",
         help="Phase 4: Organizes files into a YYYY-MM-DD directory structure."
     )
     parser_by_date.set_defaults(func=handle_by_date)
 
     # --- 5-geotag ---
     parser_geotag = subparsers.add_parser(
-        "5-geotag",
+        "geotag",
         help="Phase 5: Applies GPS data from GPX tracks."
     )
     parser_geotag.add_argument(
@@ -919,7 +919,7 @@ def main():
 
     # --- 6-to-develop ---
     parser_to_develop = subparsers.add_parser(
-        "6-to-develop",
+        "to-develop",
         help="Phase 6: Identifies folders that require further processing steps."
     )
     parser_to_develop.set_defaults(func=handle_to_develop)
