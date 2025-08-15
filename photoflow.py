@@ -498,14 +498,27 @@ def handle_geotag(args, config):
     already_tagged_count = 0
 
     logger.info("Checking for existing GPS data...")
+
+    def chunked_list(lst, n):
+        """Yield successive n-sized chunks from lst."""
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+
     try:
         with exiftool.ExifToolHelper() as et:
-            metadata_list = et.get_tags([str(p) for p in all_files], tags=["GPSLatitude"])
-            for i, metadata in enumerate(metadata_list):
-                if "EXIF:GPSLatitude" in metadata or "Composite:GPSLatitude" in metadata:
-                    already_tagged_count += 1
-                else:
-                    files_to_geotag.append(all_files[i])
+            with tqdm(total=len(all_files), desc="Checking for existing GPS") as pbar:
+                for chunk in chunked_list(all_files, 50):
+                    try:
+                        metadata_list = et.get_tags([str(p) for p in chunk], tags=["GPSLatitude"])
+                        for i, metadata in enumerate(metadata_list):
+                            if "EXIF:GPSLatitude" in metadata or "Composite:GPSLatitude" in metadata:
+                                already_tagged_count += 1
+                            else:
+                                files_to_geotag.append(chunk[i])
+                    except Exception as e:
+                        logger.warning(f"Could not process a chunk of files: {e}")
+                    finally:
+                        pbar.update(len(chunk))
     except Exception as e:
         logger.error(f"Failed to read EXIF data with pyexiftool: {e}")
         return
@@ -526,22 +539,30 @@ def handle_geotag(args, config):
 
         try:
             with exiftool.ExifToolHelper() as et:
-                params = [
-                    "-overwrite_original",
-                    "-P",
-                    geotime_arg,
-                    "-geotag",
-                    gpx_pattern,
-                ]
-                files_to_geotag_str = [str(p) for p in files_to_geotag]
-                output = et.execute(*params, *files_to_geotag_str)
+                with tqdm(total=len(files_to_geotag), desc="Applying geotags") as pbar:
+                    for chunk in chunked_list(files_to_geotag, 50):
+                        try:
+                            params = [
+                                "-overwrite_original",
+                                "-P",
+                                geotime_arg,
+                                "-geotag",
+                                gpx_pattern,
+                            ]
+                            files_to_geotag_str = [str(p) for p in chunk]
+                            output = et.execute(*params, *files_to_geotag_str)
 
-                updated_summary = re.search(r"(\d+) image files updated", output)
-                updated_count = int(updated_summary.group(1)) if updated_summary else 0
+                            updated_summary = re.search(r"(\d+) image files updated", output)
+                            if updated_summary:
+                                updated_count += int(updated_summary.group(1))
 
-                logger.debug(f"Exiftool output:\n{output}")
-                if et.last_stderr:
-                    logger.warning(f"Exiftool reported errors:\n{et.last_stderr}")
+                            logger.debug(f"Exiftool output:\n{output}")
+                            if et.last_stderr:
+                                logger.warning(f"Exiftool reported errors:\n{et.last_stderr}")
+                        except Exception as e:
+                            logger.warning(f"Could not process a chunk of files for geotagging: {e}")
+                        finally:
+                            pbar.update(len(chunk))
         except Exception as e:
             logger.error(f"An error occurred while running exiftool for geotagging: {e}")
 
