@@ -14,10 +14,10 @@ import logging
 import hashlib
 from collections import defaultdict
 import re
-import subprocess
 import shutil
 from datetime import datetime, timedelta
 from tqdm import tqdm
+import exiftool
 
 # --- Global Logger ---
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def handle_dedup(args, config):
     """
     Finds duplicate files and files with naming conflicts.
     """
-    logger.info("Running '01-dedup' command...")
+    logger.info("Running '1-dedup' command...")
 
     workspace_dir = Path.cwd() / config["workspace_dir"]
     trash_dir = Path.cwd() / config.get("duplicates_trash_dir", "_duplicates_trash")
@@ -133,7 +133,7 @@ def handle_dedup(args, config):
 
     files_by_identity = defaultdict(list)
     for info in file_data:
-        key = (info["name"], info["size"], info["checksum"])
+        key = (info["size"], info["checksum"])
         files_by_identity[key].append(info)
 
     duplicates_found = 0
@@ -177,7 +177,7 @@ def handle_dedup(args, config):
         if not args.dry_run:
             conflict_report_path.unlink()
 
-    logger.info("'01-dedup' command complete.")
+    logger.info("'1-dedup' command complete.")
 
 
 def _move_file_robustly(source_path: Path, target_dir: Path, dry_run: bool, new_base_name: str = None):
@@ -211,7 +211,7 @@ def handle_timeshift(args, config):
     """
     Shifts EXIF date/time tags in files using exiftool.
     """
-    logger.info("Running '02-timeshift' command...")
+    logger.info("Running '2-timeshift' command...")
 
     offset_pattern = re.compile(r"^[+-]?=\d{1,}:\d{1,}:\d{1,}( \d{1,}:\d{1,}:\d{1,})?$")
     if not offset_pattern.match(args.offset):
@@ -244,33 +244,39 @@ def handle_timeshift(args, config):
     updated_count, no_tags_count, error_count = 0, 0, 0
     exiftool_cmd = f"-AllDates{args.offset}"
 
-    for filepath in tqdm(files_to_process, desc="Shifting timestamps"):
-        if args.dry_run:
-            logger.info(f"DRY RUN: Would run exiftool on '{filepath}' with offset '{args.offset}'")
-            continue
-        try:
-            result = subprocess.run(
-                ["exiftool", "-m", exiftool_cmd, str(filepath)],
-                capture_output=True, text=True, check=False
-            )
-            logger.debug(f"Exiftool output for {filepath.name}:\n{result.stdout}\n{result.stderr}")
+    try:
+        with exiftool.ExifToolHelper() as et:
+            for filepath in tqdm(files_to_process, desc="Shifting timestamps"):
+                if args.dry_run:
+                    logger.info(f"DRY RUN: Would run exiftool on '{filepath}' with offset '{args.offset}'")
+                    continue
+                try:
+                    output = et.execute("-m", exiftool_cmd, str(filepath))
+                    logger.debug(f"Exiftool output for {filepath.name}:\n{output}")
 
-            if "1 image files updated" in result.stdout:
-                updated_count += 1
-            elif "0 image files updated" in result.stdout:
-                if _move_file_robustly(filepath, untagged_photos_dir, args.dry_run):
-                    no_tags_count += 1
-                else:
-                    error_count += 1
-            else:
-                if _move_file_robustly(filepath, non_photos_dir, args.dry_run):
-                    error_count += 1
-                else:
-                    error_count += 1
-        except (subprocess.SubprocessError, OSError) as e:
-            logger.error(f"Error running exiftool for {filepath}: {e}")
-            if _move_file_robustly(filepath, non_photos_dir, args.dry_run):
-                error_count += 1
+                    if "1 image files updated" in output:
+                        updated_count += 1
+                    elif "0 image files updated" in output:
+                        if _move_file_robustly(filepath, untagged_photos_dir, args.dry_run):
+                            no_tags_count += 1
+                        else:
+                            error_count += 1
+                    else:
+                        if et.last_stderr:
+                            logger.warning(f"Exiftool stderr for {filepath.name}: {et.last_stderr}")
+                        if _move_file_robustly(filepath, non_photos_dir, args.dry_run):
+                            error_count += 1
+                        else:
+                            error_count += 1
+                except Exception as e:
+                    logger.error(f"Error processing {filepath} with pyexiftool: {e}")
+                    if _move_file_robustly(filepath, non_photos_dir, args.dry_run):
+                        error_count += 1
+    except Exception as e:
+        logger.error(f"Failed to start exiftool. Aborting timeshift. Error: {e}")
+        # If we are not in dry_run, all files that were to be processed result in an error.
+        if not args.dry_run:
+            error_count = len(files_to_process)
 
     logger.info("Moving exiftool backup files...")
     originals_moved_count = 0
@@ -296,23 +302,7 @@ def handle_timeshift(args, config):
     logger.info(f"Files with no date tags to update (moved to '{untagged_photos_dir.name}'): {no_tags_count}")
     logger.info(f"Files with errors (moved to '{non_photos_dir.name}'): {error_count}")
     logger.info(f"Original file backups moved to '{originals_dir.name}': {originals_moved_count}")
-    logger.info("'02-timeshift' command complete.")
-
-def _get_exif_tags(filepath, tags):
-    """Gets specific EXIF tags from a file and returns them as a dictionary."""
-    tag_args = [f"-{tag}" for tag in tags]
-    try:
-        result = subprocess.run(
-            ["exiftool", "-s3", "-q"] + tag_args + [str(filepath)],
-            capture_output=True, text=True, check=False
-        )
-        if result.returncode != 0:
-            return None
-
-        tag_values = result.stdout.strip().split("\n")
-        return dict(zip(tags, tag_values))
-    except (subprocess.SubprocessError, OSError):
-        return None
+    logger.info("'2-timeshift' command complete.")
 
 def _parse_exif_datetime(dt_str):
     """Parses EXIF's 'YYYY:MM:DD HH:MM:SS' format."""
@@ -325,14 +315,14 @@ def handle_pair_jpegs(args, config):
     """
     Identifies RAW+JPEG pairs and moves the JPEG to a separate directory.
     """
-    logger.info("Running '03-pair-jpegs' command...")
+    logger.info("Running '3-pair-jpegs' command...")
 
     extra_jpgs_dir = Path.cwd() / "_extra_jpgs"
     if not args.dry_run:
         extra_jpgs_dir.mkdir(exist_ok=True)
 
     raw_ext = tuple(f".{ext}" for ext in config["file_formats"]["raw"])
-    img_ext = tuple(f".{ext}" for ext in config["file_formats"]["image"] if ext.startswith("jp"))
+    img_ext = tuple(f".{ext}" for ext in config["file_formats"]["image"] if "jp" in ext)
 
     raw_files = []
     for root, _, files in os.walk("."):
@@ -345,134 +335,143 @@ def handle_pair_jpegs(args, config):
     logger.info(f"Found {len(raw_files)} RAW files to check for pairs.")
 
     pairs_found_by_name, pairs_verified, jpgs_moved = 0, 0, 0
+    tags_to_check = ["EXIF:CameraModelName", "EXIF:DateTimeOriginal"]
 
-    for raw_path in tqdm(raw_files, desc="Pairing JPEGs"):
-        raw_stem = raw_path.stem
-        for ext in img_ext:
-            jpg_path = raw_path.with_name(f"{raw_stem}{ext}")
-            if jpg_path.exists():
-                pairs_found_by_name += 1
+    try:
+        with exiftool.ExifToolHelper() as et:
+            for raw_path in tqdm(raw_files, desc="Pairing JPEGs"):
+                raw_stem = raw_path.stem
+                for ext in img_ext:
+                    jpg_path = raw_path.with_name(f"{raw_stem}{ext}")
+                    if jpg_path.exists():
+                        pairs_found_by_name += 1
 
-                tags_to_check = ["CameraModelName", "DateTimeOriginal"]
-                raw_tags = _get_exif_tags(raw_path, tags_to_check)
-                jpg_tags = _get_exif_tags(jpg_path, tags_to_check)
+                        try:
+                            metadata = et.get_tags([str(raw_path), str(jpg_path)], tags=tags_to_check)
+                            if len(metadata) < 2:
+                                continue
+                            raw_tags, jpg_tags = metadata[0], metadata[1]
+                        except Exception as e:
+                            logger.warning(f"Could not read EXIF for {raw_path} or {jpg_path}: {e}")
+                            continue
 
-                if not raw_tags or not jpg_tags:
-                    continue
+                        raw_dt = _parse_exif_datetime(raw_tags.get("EXIF:DateTimeOriginal"))
+                        jpg_dt = _parse_exif_datetime(jpg_tags.get("EXIF:DateTimeOriginal"))
 
-                raw_dt = _parse_exif_datetime(raw_tags.get("DateTimeOriginal"))
-                jpg_dt = _parse_exif_datetime(jpg_tags.get("DateTimeOriginal"))
+                        if not raw_dt or not jpg_dt:
+                            continue
 
-                if not raw_dt or not jpg_dt:
-                    continue
+                        model_match = raw_tags.get("EXIF:CameraModelName") == jpg_tags.get("EXIF:CameraModelName")
+                        time_match = abs(raw_dt - jpg_dt) <= timedelta(seconds=1)
 
-                model_match = raw_tags.get("CameraModelName") == jpg_tags.get("CameraModelName")
-                time_match = abs(raw_dt - jpg_dt) <= timedelta(seconds=1)
+                        if model_match and time_match:
+                            pairs_verified += 1
+                            if _move_file_robustly(jpg_path, extra_jpgs_dir, args.dry_run):
+                                jpgs_moved += 1
+                        break  # Found a pair, move to the next RAW file
+    except Exception as e:
+        logger.error(f"Failed to start exiftool. Aborting pair-jpegs. Error: {e}")
 
-                if model_match and time_match:
-                    pairs_verified += 1
-                    if _move_file_robustly(jpg_path, extra_jpgs_dir, args.dry_run):
-                        jpgs_moved += 1
-
-                break
 
     logger.info("\n--- Pair JPEGs Summary ---")
     logger.info(f"Potential pairs found by name: {pairs_found_by_name}")
     logger.info(f"Pairs verified by EXIF data: {pairs_verified}")
     logger.info(f"Verified JPEGs moved to '{extra_jpgs_dir.name}': {jpgs_moved}")
-    logger.info("'03-pair-jpegs' command complete.")
+    logger.info("'3-pair-jpegs' command complete.")
 
 
 def handle_by_date(args, config):
     """
-    Organizes files into a 'by-date/YYYY-MM-DD/' directory structure.
+    Organizes files into a 'by-date/YYYY-MM-DD/' directory structure based on EXIF date.
+    This version uses pyexiftool to read data and Python for file operations.
     """
-    logger.info("Running '04-by-date' command...")
+    logger.info("Running '4-by-date' command...")
 
-    src_dir = Path.cwd() / "src"
     by_date_dir = Path.cwd() / "by-date"
     workspace_dir = Path.cwd() / config["workspace_dir"]
 
     if not args.dry_run:
-        src_dir.mkdir(exist_ok=True)
         by_date_dir.mkdir(exist_ok=True)
 
-    logger.info(f"Moving items to temporary '{src_dir.name}' directory...")
-    moved_to_src_count = 0
-    items_in_cwd = list(Path.cwd().iterdir())
+    # --- Collect files to process ---
+    all_files = [p for p in Path.cwd().rglob("*") if p.is_file()]
+    files_to_process = []
 
-    exclude_dirs = {src_dir.resolve(), by_date_dir.resolve(), workspace_dir.resolve()}
+    exclude_dirs = {by_date_dir.resolve(), workspace_dir.resolve()}
     for d in Path.cwd().glob("_*"):
         exclude_dirs.add(d.resolve())
 
-    for item_path in items_in_cwd:
-        if item_path.resolve() in exclude_dirs or item_path.name == "photoflow.py" or item_path.name == "pyproject.toml":
+    for p in all_files:
+        # Exclude files inside excluded directories (e.g. `_photo_workspace`, `by-date`)
+        if any(excluded_dir in p.resolve().parents for excluded_dir in exclude_dirs):
             continue
-        moved_to_src_count += 1
-        if args.dry_run:
-            logger.info(f"DRY RUN: Would move '{item_path}' to '{src_dir}'")
-        else:
-            try:
-                shutil.move(str(item_path), src_dir)
-            except shutil.Error as e:
-                logger.warning(f"Could not move {item_path.name}: {e}")
+        # Exclude script files in the root directory
+        if p.parent.resolve() == Path.cwd().resolve() and p.name in ("photoflow.py", "pyproject.toml", "README.md", "specification.md", ".gitignore"):
+            continue
+        files_to_process.append(p)
 
-    logger.info(f"Moved {moved_to_src_count} items to '{src_dir.name}'.")
+    logger.info(f"Found {len(files_to_process)} files to organize.")
+    if not files_to_process:
+        logger.info("'4-by-date' command complete. No files to process.")
+        return
 
-    logger.info("Step 1: Renaming and moving files to 'by-date' based on EXIF date...")
-    if not any(src_dir.iterdir()):
-        logger.info("Source directory is empty. Nothing to process.")
-    elif args.dry_run:
-        logger.info("DRY RUN: Would run exiftool to rename and move files from 'src' to 'by-date'.")
-    else:
-        try:
-            filename_format = f"-FileName<{by_date_dir.name}" "/${DateTimeOriginal}"
-            date_format = "%Y-%m-%d--%H-%M-%S%%-c.%%le"
-            subprocess.run(
-                ["exiftool", "-overwrite_original", "-P", "-r", "-d", date_format, filename_format, str(src_dir)],
-                capture_output=True, text=True, check=False
+    # --- Process files ---
+    moved_count = 0
+    no_date_count = 0
+
+    try:
+        with exiftool.ExifToolHelper() as et:
+            metadata_list = et.get_tags(
+                [str(p) for p in files_to_process],
+                tags=["EXIF:DateTimeOriginal"]
             )
-        except (subprocess.SubprocessError, OSError) as e:
-            logger.error(f"Error during Step 1 (rename): {e}")
 
-    logger.info("Step 2: Moving files into daily subfolders...")
-    if not any(by_date_dir.glob("*.*")):
-        logger.info("No files to organize into daily subfolders.")
-    elif args.dry_run:
-        logger.info("DRY RUN: Would run exiftool to move files into daily subfolders.")
-    else:
-        try:
-            directory_format = f"-Directory<{by_date_dir.name}" "/${DateTimeOriginal}"
-            date_format = "%Y-%m-%d"
-            subprocess.run(
-                ["exiftool", "-overwrite_original", "-P", "-r", "-d", date_format, directory_format, str(by_date_dir)],
-                capture_output=True, text=True, check=False
-            )
-        except (subprocess.SubprocessError, OSError) as e:
-            logger.error(f"Error during Step 2 (move to subfolders): {e}")
+            for metadata in tqdm(metadata_list, desc="Organizing by date"):
+                source_path_str = metadata.get("SourceFile")
+                if not source_path_str:
+                    continue
+                source_path = Path(source_path_str)
 
-    logger.info("Step 3: Cleaning up...")
-    remaining_files = list(src_dir.rglob("*")) if src_dir.exists() else []
-    if remaining_files:
-        logger.warning(f"{len(remaining_files)} items remain in '{src_dir.name}'. These may lack date tags or have caused errors.")
-    elif src_dir.exists():
-        if args.dry_run:
-            logger.info(f"DRY RUN: Would remove empty source directory: '{src_dir.name}'")
-        else:
-            try:
-                shutil.rmtree(src_dir)
-                logger.info(f"Removed empty source directory: '{src_dir.name}'")
-            except OSError as e:
-                logger.warning(f"Could not remove source directory {src_dir.name}: {e}")
+                dt_str = metadata.get("EXIF:DateTimeOriginal")
+                dt = _parse_exif_datetime(dt_str)
 
-    logger.info("'04-by-date' command complete.")
+                if not dt:
+                    logger.warning(f"No valid 'DateTimeOriginal' tag for '{source_path}'. Skipping.")
+                    no_date_count += 1
+                    continue
+
+                day_dir_name = dt.strftime("%Y-%m-%d")
+                new_stem = dt.strftime("%Y-%m-%d--%H-%M-%S")
+                extension = source_path.suffix.lower()
+                new_base_name = f"{new_stem}{extension}"
+
+                dest_dir = by_date_dir / day_dir_name
+
+                if not args.dry_run:
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+
+                if _move_file_robustly(source_path, dest_dir, args.dry_run, new_base_name=new_base_name):
+                    moved_count +=1
+                else:
+                    # If move fails, it's an error, but we can just count it as not moved.
+                    # _move_file_robustly already logs errors.
+                    pass
+
+    except Exception as e:
+        logger.error(f"An error occurred during 'by-date' processing: {e}")
+        return
+
+    logger.info("\n--- By-Date Summary ---")
+    logger.info(f"Files successfully moved and renamed: {moved_count}")
+    logger.info(f"Files skipped (no date tag): {no_date_count}")
+    logger.info("'4-by-date' command complete.")
 
 
 def handle_geotag(args, config):
     """
-    Applies GPS data to files from GPX tracks with overwrite protection.
+    Applies GPS data to files from GPX tracks, skipping files that are already geotagged.
     """
-    logger.info("Running '05-geotag' command...")
+    logger.info("Running '5-geotag' command...")
 
     gpx_dir = Path(args.gpx_dir)
     if not gpx_dir.is_dir():
@@ -489,98 +488,74 @@ def handle_geotag(args, config):
         logger.error(f"Target directory '{target_dir.name}' not found. Please run '04-by-date' first.")
         return 1
 
-    temp_hold_dir = Path.cwd() / "_already_geotagged"
-    if not args.dry_run:
-        temp_hold_dir.mkdir(exist_ok=True)
+    all_files = [p for p in target_dir.rglob("*") if p.is_file()]
+    logger.info(f"Found {len(all_files)} total files in '{target_dir.name}'.")
+    if not all_files:
+        logger.info("'5-geotag' command complete.")
+        return
 
-    logger.info("Scanning for files that are already geotagged...")
-    files_to_process = list(target_dir.rglob("*.*"))
+    files_to_geotag = []
     already_tagged_count = 0
 
-    for filepath in tqdm(files_to_process, desc="Checking for existing GPS"):
-        if not filepath.is_file():
-            continue
-
-        result = subprocess.run(
-            ["exiftool", "-if", "$GPSLatitude", "-p", "$GPSLatitude", str(filepath)],
-            capture_output=True, text=True, check=False
-        )
-
-        if result.stdout.strip():
-            already_tagged_count += 1
-            if args.dry_run:
-                logger.info(f"DRY RUN: Would move already-tagged file '{filepath}' to holding area.")
-            else:
-                relative_path = filepath.relative_to(target_dir)
-                hold_path_dir = temp_hold_dir / relative_path.parent
-                hold_path_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    shutil.move(str(filepath), hold_path_dir)
-                except shutil.Error as e:
-                    logger.warning(f"Could not move already-tagged file {filepath.name}: {e}")
-
-    logger.info(f"Found and moved {already_tagged_count} already geotagged files to a temporary location.")
-
-    logger.info(f"Geotagging remaining files in '{target_dir.name}'...")
-
-    geotime_arg = f"-geotime<${{DateTimeOriginal}}{args.timezone}"
-    gpx_pattern = str(gpx_dir.resolve() / "*.gpx")
-
-    updated_count = 0
-    if args.dry_run:
-        logger.info(f"DRY RUN: Would run exiftool geotag with pattern '{gpx_pattern}' on '{target_dir}'.")
-    else:
-        try:
-            result = subprocess.run(
-                ["exiftool", "-overwrite_original", "-P", geotime_arg, "-geotag", gpx_pattern, "-r", str(target_dir)],
-                capture_output=True, text=True, check=False
-            )
-            updated_summary = re.search(r"(\d+) image files updated", result.stdout)
-            updated_count = int(updated_summary.group(1)) if updated_summary else 0
-            logger.info(f"Exiftool updated {updated_count} files.")
-            if result.stderr:
-                logger.warning(f"Exiftool reported errors:\n{result.stderr}")
-
-        except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
-            logger.error(f"FATAL: An error occurred while running exiftool: {e}")
-
-    logger.info("Restoring already-geotagged files...")
-    restored_count = 0
-    if already_tagged_count > 0:
-        items_to_restore = list(temp_hold_dir.rglob("*"))
-        for item in tqdm(items_to_restore, desc="Restoring files"):
-            relative_path = item.relative_to(temp_hold_dir)
-            dest_path = target_dir / relative_path
-
-            if item.is_file():
-                restored_count += 1
-                if args.dry_run:
-                    logger.info(f"DRY RUN: Would restore '{item}' to '{dest_path}'.")
+    logger.info("Checking for existing GPS data...")
+    try:
+        with exiftool.ExifToolHelper() as et:
+            metadata_list = et.get_tags([str(p) for p in all_files], tags=["GPSLatitude"])
+            for i, metadata in enumerate(metadata_list):
+                if "EXIF:GPSLatitude" in metadata or "Composite:GPSLatitude" in metadata:
+                    already_tagged_count += 1
                 else:
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.move(str(item), dest_path)
-                    except shutil.Error as e:
-                        logger.warning(f"Could not restore file {item.name}: {e}")
+                    files_to_geotag.append(all_files[i])
+    except Exception as e:
+        logger.error(f"Failed to read EXIF data with pyexiftool: {e}")
+        return
 
-    if not args.dry_run:
+    logger.info(f"Found {already_tagged_count} files that are already geotagged and will be skipped.")
+
+    if not files_to_geotag:
+        logger.info("No new files to geotag.")
+        updated_count = 0
+    elif args.dry_run:
+        logger.info(f"DRY RUN: Would attempt to geotag {len(files_to_geotag)} files.")
+        updated_count = 0
+    else:
+        logger.info(f"Attempting to geotag {len(files_to_geotag)} files...")
+        geotime_arg = f"-geotime<${{DateTimeOriginal}}{args.timezone}"
+        gpx_pattern = str(gpx_dir.resolve() / "*.gpx")
+        updated_count = 0
+
         try:
-            shutil.rmtree(temp_hold_dir)
-        except OSError as e:
-            logger.warning(f"Could not remove temporary directory {temp_hold_dir.name}: {e}")
+            with exiftool.ExifToolHelper() as et:
+                params = [
+                    "-overwrite_original",
+                    "-P",
+                    geotime_arg,
+                    "-geotag",
+                    gpx_pattern,
+                ]
+                files_to_geotag_str = [str(p) for p in files_to_geotag]
+                output = et.execute(*params, *files_to_geotag_str)
+
+                updated_summary = re.search(r"(\d+) image files updated", output)
+                updated_count = int(updated_summary.group(1)) if updated_summary else 0
+
+                logger.debug(f"Exiftool output:\n{output}")
+                if et.last_stderr:
+                    logger.warning(f"Exiftool reported errors:\n{et.last_stderr}")
+        except Exception as e:
+            logger.error(f"An error occurred while running exiftool for geotagging: {e}")
 
     logger.info("\n--- Geotag Summary ---")
     logger.info(f"Files skipped (already had GPS data): {already_tagged_count}")
     logger.info(f"Files successfully geotagged in this run: {updated_count}")
-    logger.info(f"Restored {restored_count} previously tagged files.")
-    logger.info("'05-geotag' command complete.")
+    logger.info("'5-geotag' command complete.")
 
 
 def handle_to_develop(args, config):
     """
     Identifies folders that require further processing steps in a RAW development workflow.
     """
-    logger.info("Running '06-to-develop' command...")
+    logger.info("Running '6-to-develop' command...")
 
     raw_exts = [f".{ext}" for ext in config["file_formats"]["raw"]]
     tif_exts = [".tif", ".tiff"]
@@ -641,18 +616,27 @@ def handle_to_develop(args, config):
     else:
         logger.info("\nNo folders found needing Standard JPG generation.")
 
-    logger.info("\n'06-to-develop' command complete.")
+    logger.info("\n'6-to-develop' command complete.")
 
 
 # --- Helper Functions for Robustness ---
 
 def check_dependencies():
-    """Checks for required command-line tools."""
-    if not shutil.which("exiftool"):
-        logger.critical("CRITICAL ERROR: 'exiftool' not found in your system's PATH.")
-        logger.critical("Please install ExifTool from https://exiftool.org/ and ensure it is accessible.")
+    """Checks that the exiftool command-line tool is available."""
+    try:
+        with exiftool.ExifTool() as et:
+            # Check if exiftool is running by getting its version
+            version = et.version
+            logger.debug(f"Dependency check passed: found exiftool version {version}.")
+    except FileNotFoundError:
+        logger.critical("CRITICAL ERROR: 'exiftool' command not found.")
+        logger.critical(
+            "Please install ExifTool from https://exiftool.org/ and ensure it is in your system's PATH."
+        )
         sys.exit(1)
-    logger.debug("Dependency check passed: 'exiftool' is available.")
+    except Exception as e:
+        logger.critical(f"CRITICAL ERROR: An unexpected error occurred while checking for exiftool: {e}")
+        sys.exit(1)
 
 def check_write_permission(directory: Path):
     """Checks if the script has write permissions in a given directory."""
@@ -695,12 +679,12 @@ def main():
             "A tool for managing and processing photo and video collections.\n\n"
             "The workflow is broken down into numbered phases (subcommands).\n"
             "It is recommended to run them in order for a complete workflow, e.g.:\n"
-            "  1. 01-dedup         (Find and report duplicates)\n"
-            "  2. 02-timeshift     (Correct camera timestamps if needed)\n"
-            "  3. 03-pair-jpegs    (Separate RAW+JPEG pairs)\n"
-            "  4. 04-by-date       (Organize files into date-based folders)\n"
-            "  5. 05-geotag        (Add GPS data from GPX tracks)\n"
-            "  6. 06-to-develop    (Report on files needing development, e.g. RAW->TIF)"
+            "  1. 1-dedup         (Find and report duplicates)\n"
+            "  2. 2-timeshift     (Correct camera timestamps if needed)\n"
+            "  3. 3-pair-jpegs    (Separate RAW+JPEG pairs)\n"
+            "  4. 4-by-date       (Organize files into date-based folders)\n"
+            "  5. 5-geotag        (Add GPS data from GPX tracks)\n"
+            "  6. 6-to-develop    (Report on files needing development, e.g. RAW->TIF)"
         ),
         epilog="Use 'photoflow.py <command> --help' for more information on a specific command.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -710,16 +694,16 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands (phases)")
 
-    # --- 01-dedup ---
+    # --- 1-dedup ---
     parser_dedup = subparsers.add_parser(
-        "01-dedup",
+        "1-dedup",
         help="Phase 1: Finds duplicate files and files with naming conflicts."
     )
     parser_dedup.set_defaults(func=handle_dedup)
 
-    # --- 02-timeshift ---
+    # --- 2-timeshift ---
     parser_timeshift = subparsers.add_parser(
-        "02-timeshift",
+        "2-timeshift",
         help="Phase 2: Shifts EXIF timestamps for a batch of files."
     )
     parser_timeshift.add_argument(
@@ -729,24 +713,24 @@ def main():
     )
     parser_timeshift.set_defaults(func=handle_timeshift)
 
-    # --- 03-pair-jpegs ---
+    # --- 3-pair-jpegs ---
     parser_pair_jpegs = subparsers.add_parser(
-        "03-pair-jpegs",
+        "3-pair-jpegs",
         help="Phase 3: Identifies RAW+JPEG pairs and separates the JPEG file."
     )
     parser_pair_jpegs.set_defaults(func=handle_pair_jpegs)
 
-    # --- 04-by-date ---
+    # --- 4-by-date ---
     parser_by_date = subparsers.add_parser(
-        "04-by-date",
+        "4-by-date",
         help="Phase 4: Organizes files into a YYYY-MM-DD directory structure."
     )
     parser_by_date.set_defaults(func=handle_by_date)
 
-    # --- 05-geotag ---
+    # --- 5-geotag ---
     parser_geotag = subparsers.add_parser(
-        "05-geotag",
-        help="Phase 5: Applies GPS data to files from GPX tracks."
+        "5-geotag",
+        help="Phase 5: Applies GPS data from GPX tracks."
     )
     parser_geotag.add_argument(
         "--gpx-dir",
@@ -760,9 +744,9 @@ def main():
     )
     parser_geotag.set_defaults(func=handle_geotag)
 
-    # --- 06-to-develop ---
+    # --- 6-to-develop ---
     parser_to_develop = subparsers.add_parser(
-        "06-to-develop",
+        "6-to-develop",
         help="Phase 6: Identifies folders that require further processing steps."
     )
     parser_to_develop.set_defaults(func=handle_to_develop)
