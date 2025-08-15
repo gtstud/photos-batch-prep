@@ -43,7 +43,7 @@ It is recommended to install PhotoFlow using `pip`.
 
 The script is run from the command line, specifying a subcommand for the task you want to perform. All operations are run from within the directory containing the photos you want to process.
 
-When run with no command, it will display a detailed help message explaining the recommended workflow.
+When run with no command, it now correctly displays a detailed help message explaining all available commands and the recommended workflow.
 
 ```bash
 # Get help for all commands and see the workflow
@@ -87,7 +87,7 @@ The tool is designed around a logical, numbered workflow. Here are the main comm
 
 ### 1. `01-dedup`
 Finds duplicate files.
-- **What it does:** Scans for files that are exact duplicates (same name, size, checksum) and moves them to a trash directory (`_duplicates_trash` by default). It also generates a report for files with the same name but different content.
+- **What it does:** Scans for files that have identical content (based on size and checksum, regardless of filename). The first-found file is kept, and subsequent duplicates are moved to a trash directory (`_duplicates_trash` by default). It also generates a report for files with the same name but different content.
 
 ```bash
 photoflow 01-dedup
@@ -95,8 +95,10 @@ photoflow 01-dedup
 
 ### 2. `02-timeshift`
 Corrects the EXIF timestamps on your photos if the camera clock was wrong.
-- **Usage:** Provide a time shift string. For example, to add 1 hour and 30 minutes:
-
+- **Usage:** Provide a time shift using simple flags or an advanced offset string.
+  - To add 1 day and 2 hours: `photoflow 02-timeshift --days 1 --hours 2`
+  - To subtract 30 minutes: `photoflow 02-timeshift --minutes -30`
+- **Advanced Usage:** You can also provide a raw `exiftool` offset string. For example, to add 1 hour and 30 minutes:
 ```bash
 photoflow 02-timeshift --offset "+=0:0:0 1:30:0"
 ```
@@ -119,7 +121,7 @@ photoflow 04-by-date
 
 ### 5. `05-geotag`
 Applies GPS coordinates to your photos using a GPX track log.
-- **Safety Feature:** This command **will not** overwrite GPS data on files that are already geotagged.
+- **Safety Feature:** This command automatically detects and **skips** any files that are already geotagged. It **will not** overwrite existing GPS data.
 - **Usage:**
 
 ```bash
