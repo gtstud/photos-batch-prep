@@ -86,39 +86,33 @@ def _get_file_hash(filepath, algorithm):
     except IOError:
         return None
 
-def handle_dedup(args, config):
+def _scan_and_hash_files(exclude_dirs: set[Path], checksum_algo: str, logger) -> tuple[list, defaultdict]:
     """
-    Finds duplicate files and files with naming conflicts.
+    Scans for files recursively, avoiding specified directories, and calculates their checksums.
+
+    Args:
+        exclude_dirs: A set of resolved absolute paths to exclude from the scan.
+        checksum_algo: The hashing algorithm to use.
+        logger: The logger instance.
+
+    Returns:
+        A tuple containing:
+        - file_data: A list of dictionaries, each with info about a file.
+        - files_by_name: A defaultdict grouping file_info dicts by filename.
     """
-    logger.info("Running '1-dedup' command...")
-
-    workspace_dir = Path.cwd() / config["workspace_dir"]
-    trash_dir = Path.cwd() / config.get("duplicates_trash_dir", "_duplicates_trash")
-
-    workspace_dir.mkdir(exist_ok=True)
-    if not args.dry_run:
-        trash_dir.mkdir(exist_ok=True)
-
-    logger.info(f"Workspace directory: {workspace_dir}")
-    logger.info(f"Trash directory for duplicates: {trash_dir}")
-
-    conflict_report_path = workspace_dir / "p01-dedup-report01-conflicting_versions.txt"
-
-    checksum_algo = config["dedup"]["checksum_algorithm"]
-    logger.info(f"Using '{checksum_algo}' checksum algorithm.")
-
     logger.info("Scanning files and calculating checksums...")
     file_data = []
     files_by_name = defaultdict(list)
+    files_to_scan = []
 
-    all_files_for_hashing = []
-    for root, dirs, files in os.walk("."):
-        if str(workspace_dir.resolve()) in str(Path(root).resolve()) or str(trash_dir.resolve()) in str(Path(root).resolve()):
+    for root, _, files in os.walk("."):
+        root_path = Path(root).resolve()
+        if any(str(root_path).startswith(str(ex_dir)) for ex_dir in exclude_dirs):
             continue
         for name in files:
-            all_files_for_hashing.append(Path(root) / name)
+            files_to_scan.append(Path(root) / name)
 
-    for filepath in tqdm(all_files_for_hashing, desc="Hashing files"):
+    for filepath in tqdm(files_to_scan, desc="Hashing files"):
         try:
             size = filepath.stat().st_size
             checksum = _get_file_hash(filepath, checksum_algo)
@@ -130,52 +124,110 @@ def handle_dedup(args, config):
             logger.warning(f"Could not process file {filepath}: {e}")
 
     logger.info(f"Processed {len(file_data)} files.")
+    return file_data, files_by_name
 
+
+def _move_duplicates(file_data: list, trash_dir: Path, args, logger):
+    """
+    Identifies duplicate files based on size and checksum, and moves them to the trash directory.
+
+    Args:
+        file_data: A list of file information dictionaries from _scan_and_hash_files.
+        trash_dir: The directory where duplicates will be moved.
+        args: The command-line arguments (for dry_run).
+        logger: The logger instance.
+    """
     files_by_identity = defaultdict(list)
     for info in file_data:
         key = (info["size"], info["checksum"])
         files_by_identity[key].append(info)
 
     duplicates_found = 0
-    for key, items in sorted(files_by_identity.items()):
+    for _, items in sorted(files_by_identity.items()):
         if len(items) > 1:
-            items.sort(key=lambda x: x["path"])
-            duplicates = items[1:]
-            for dup in duplicates:
+            items.sort(key=lambda x: x["path"])  # Keep the one with the shortest path
+            for dup in items[1:]:
                 duplicates_found += 1
                 logger.info(f"Found duplicate: '{dup['path']}' (original: '{items[0]['path']}')")
                 if args.dry_run:
                     logger.info(f"DRY RUN: Would move '{dup['path']}' to '{trash_dir}'")
                 else:
-                    try:
-                        shutil.move(str(dup['path']), trash_dir)
-                    except shutil.Error as e:
-                        logger.error(f"Could not move duplicate file {dup['path']}: {e}")
+                    # _move_file_robustly handles its own errors, logging, and name collisions.
+                    _move_file_robustly(dup['path'], trash_dir, args.dry_run)
 
     if duplicates_found > 0:
         logger.info(f"Found and moved {duplicates_found} duplicate files to trash directory: {trash_dir}")
     else:
         logger.info("No duplicate files found.")
 
-    conflicts_found = 0
-    with open(conflict_report_path, "w", encoding="utf-8") as f:
-        f.write("# Report on files with the same name but different checksums.\n\n")
 
-        for name, items in sorted(files_by_name.items()):
-            unique_checksums = {item["checksum"] for item in items}
-            if len(unique_checksums) > 1:
-                conflicts_found += 1
-                f.write(f"Filename: '{name}' has {len(items)} instances with {len(unique_checksums)} different versions:\n")
-                for item in sorted(items, key=lambda x: x["checksum"]):
-                    f.write(f"  - Checksum: {item['checksum']}, Size: {item['size']}, Path: '{item['path']}'\n")
-                f.write("\n")
+def _generate_conflict_report(files_by_name: defaultdict, report_path: Path, args, logger):
+    """
+    Generates a report for files that have the same name but different checksums.
+
+    Args:
+        files_by_name: A defaultdict grouping file info by filename.
+        report_path: The path to write the report to.
+        args: The command-line arguments (for dry_run).
+        logger: The logger instance.
+    """
+    conflicts_found = 0
+    report_content = ["# Report on files with the same name but different checksums.\n\n"]
+
+    for name, items in sorted(files_by_name.items()):
+        unique_checksums = {item["checksum"] for item in items}
+        if len(unique_checksums) > 1:
+            conflicts_found += 1
+            report_content.append(f"Filename: '{name}' has {len(items)} instances with {len(unique_checksums)} different versions:\n")
+            for item in sorted(items, key=lambda x: x["checksum"]):
+                report_content.append(f"  - Checksum: {item['checksum']}, Size: {item['size']}, Path: '{item['path']}'\n")
+            report_content.append("\n")
 
     if conflicts_found > 0:
-        logger.info(f"Found {conflicts_found} files with conflicting versions. Report written to: {conflict_report_path}")
+        logger.info(f"Found {conflicts_found} files with conflicting versions. Report written to: {report_path}")
+        if not args.dry_run:
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write("".join(report_content))
     else:
         logger.info("No conflicting file versions found.")
-        if not args.dry_run:
-            conflict_report_path.unlink()
+        # Don't leave an empty report file
+        if report_path.exists():
+            report_path.unlink()
+
+
+def handle_dedup(args, config):
+    """
+    Phase 1: Finds duplicate files and files with naming conflicts.
+
+    This function orchestrates the deduplication process by:
+    1. Scanning and hashing all files in the current directory.
+    2. Identifying files with identical content (size + checksum) and moving duplicates to a trash folder.
+    3. Generating a report for files that share a name but have different content.
+    """
+    logger.info("Running '1-dedup' command...")
+
+    # --- Setup Paths ---
+    workspace_dir = Path.cwd() / config["workspace_dir"]
+    trash_dir = Path.cwd() / config.get("duplicates_trash_dir", "_duplicates_trash")
+    conflict_report_path = workspace_dir / "p01-dedup-report-conflicting-versions.txt"
+
+    if not args.dry_run:
+        workspace_dir.mkdir(exist_ok=True)
+        trash_dir.mkdir(exist_ok=True)
+
+    logger.info(f"Workspace directory: {workspace_dir}")
+    logger.info(f"Trash directory for duplicates: {trash_dir}")
+
+    # --- Main Logic ---
+    checksum_algo = config["dedup"]["checksum_algorithm"]
+    logger.info(f"Using '{checksum_algo}' checksum algorithm.")
+
+    exclude_dirs = {workspace_dir.resolve(), trash_dir.resolve()}
+    file_data, files_by_name = _scan_and_hash_files(exclude_dirs, checksum_algo, logger)
+
+    if file_data:
+        _move_duplicates(file_data, trash_dir, args, logger)
+        _generate_conflict_report(files_by_name, conflict_report_path, args, logger)
 
     logger.info("'1-dedup' command complete.")
 
@@ -207,16 +259,68 @@ def _move_file_robustly(source_path: Path, target_dir: Path, dry_run: bool, new_
         logger.error(f"Error moving file {source_path} to {destination_path}: {e}")
         return None
 
+def _calculate_timeshift_offset(args, logger) -> str | None:
+    """
+    Calculates the exiftool offset string from argparse arguments.
+
+    Returns the offset string or None if the input is invalid.
+    """
+    if args.offset:
+        if any([args.days, args.hours, args.minutes, args.seconds]):
+            logger.error("Error: Cannot use --offset simultaneously with specific time unit flags (e.g., --hours).")
+            return None
+        # Validate the provided offset format
+        offset_pattern = re.compile(r"^[+-]?=\d{1,}:\d{1,}:\d{1,}( \d{1,}:\d{1,}:\d{1,})?$")
+        if not offset_pattern.match(args.offset):
+            logger.error(f"Invalid offset format: '{args.offset}'. Expected format like '+=Y:M:D H:M:S'.")
+            return None
+        return args.offset
+
+    # If --offset is not used, build it from other flags
+    if not any([args.days, args.hours, args.minutes, args.seconds]):
+        logger.error("Error: No time shift specified. Use --offset or provide at least one time unit flag (e.g., --hours).")
+        return None
+
+    # Using timedelta to handle positive/negative shifts easily
+    delta = timedelta(days=args.days, hours=args.hours, minutes=args.minutes, seconds=args.seconds)
+    total_seconds = delta.total_seconds()
+
+    if total_seconds == 0:
+        return "0"  # A zero shift is a valid no-op
+
+    sign = "+=" if total_seconds >= 0 else "-="
+    s = abs(int(total_seconds))
+
+    days = s // 86400
+    s %= 86400
+    hours = s // 3600
+    s %= 3600
+    minutes = s // 60
+    seconds = s % 60
+
+    # exiftool format is Y:M:D H:M:S. We don't support Year/Month, so they are 0.
+    return f"{sign}0:0:{days} {hours}:{minutes}:{seconds}"
+
+
 def handle_timeshift(args, config):
     """
-    Shifts EXIF date/time tags in files using exiftool.
+    Phase 2: Shifts EXIF date/time tags in files using exiftool.
+
+    This command corrects the 'AllDates' tag (which includes DateTimeOriginal,
+    CreateDate, and ModifyDate) for all files in the current directory. It is
+    useful for correcting the timestamp when a camera's clock was set incorrectly.
+    Files are sorted into output directories based on whether the operation
+    succeeded, failed, or was not applicable.
     """
     logger.info("Running '2-timeshift' command...")
 
-    offset_pattern = re.compile(r"^[+-]?=\d{1,}:\d{1,}:\d{1,}( \d{1,}:\d{1,}:\d{1,})?$")
-    if not offset_pattern.match(args.offset):
-        logger.error(f"Invalid offset format: '{args.offset}'. Expected format like '+=Y:M:D H:M:S'.")
-        return 1
+    offset_str = _calculate_timeshift_offset(args, logger)
+    if offset_str is None:
+        return 1  # Error already logged
+
+    if offset_str == "0":
+        logger.info("Time shift is zero. No changes will be made. Command complete.")
+        return 0
 
     workspace_dir = Path.cwd() / config["workspace_dir"]
     non_photos_dir = Path.cwd() / "_non_photos"
@@ -242,13 +346,13 @@ def handle_timeshift(args, config):
     logger.info(f"Found {len(files_to_process)} files to process.")
 
     updated_count, no_tags_count, error_count = 0, 0, 0
-    exiftool_cmd = f"-AllDates{args.offset}"
+    exiftool_cmd = f"-AllDates{offset_str}"
 
     try:
         with exiftool.ExifToolHelper() as et:
             for filepath in tqdm(files_to_process, desc="Shifting timestamps"):
                 if args.dry_run:
-                    logger.info(f"DRY RUN: Would run exiftool on '{filepath}' with offset '{args.offset}'")
+                    logger.info(f"DRY RUN: Would run exiftool on '{filepath}' with offset '{offset_str}'")
                     continue
                 try:
                     output = et.execute("-m", exiftool_cmd, str(filepath))
@@ -313,7 +417,12 @@ def _parse_exif_datetime(dt_str):
 
 def handle_pair_jpegs(args, config):
     """
-    Identifies RAW+JPEG pairs and moves the JPEG to a separate directory.
+    Phase 3: Identifies RAW+JPEG pairs and moves the "extra" JPEG to a separate directory.
+
+    For photographers who shoot in RAW+JPEG mode, this command finds pairs where the
+    RAW file and JPEG share the same base name. It verifies they are a true pair by
+    comparing EXIF metadata (Camera Model and Timestamp) and moves the JPEG file
+    to the '_extra_jpgs' directory if they match.
     """
     logger.info("Running '3-pair-jpegs' command...")
 
@@ -380,37 +489,59 @@ def handle_pair_jpegs(args, config):
     logger.info("'3-pair-jpegs' command complete.")
 
 
-def handle_by_date(args, config):
+def _collect_files_for_by_date(config: dict, logger) -> tuple[list[Path], Path]:
     """
-    Organizes files into a 'by-date/YYYY-MM-DD/' directory structure based on EXIF date.
-    This version uses pyexiftool to read data and Python for file operations.
-    """
-    logger.info("Running '4-by-date' command...")
+    Collects all files to be processed by the 'by-date' command, excluding special directories.
 
+    Args:
+        config: The application configuration dictionary.
+        logger: The logger instance.
+
+    Returns:
+        A tuple containing:
+        - A list of file paths to process.
+        - The path to the 'by-date' destination directory.
+    """
     by_date_dir = Path.cwd() / "by-date"
     workspace_dir = Path.cwd() / config["workspace_dir"]
 
-    if not args.dry_run:
-        by_date_dir.mkdir(exist_ok=True)
-
-    # --- Collect files to process ---
-    all_files = [p for p in Path.cwd().rglob("*") if p.is_file()]
-    files_to_process = []
-
     exclude_dirs = {by_date_dir.resolve(), workspace_dir.resolve()}
     for d in Path.cwd().glob("_*"):
-        exclude_dirs.add(d.resolve())
+        if d.is_dir():
+            exclude_dirs.add(d.resolve())
 
-    for p in all_files:
-        # Exclude files inside excluded directories (e.g. `_photo_workspace`, `by-date`)
-        if any(excluded_dir in p.resolve().parents for excluded_dir in exclude_dirs):
+    files_to_process = []
+    for p in Path.cwd().rglob("*"):
+        if not p.is_file():
             continue
-        # Exclude script files in the root directory
+
+        # Exclude files inside special directories
+        if any(str(p.resolve()).startswith(str(ex_dir)) for ex_dir in exclude_dirs):
+            continue
+
+        # Exclude script-related files in the root directory
         if p.parent.resolve() == Path.cwd().resolve() and p.name in ("photoflow.py", "pyproject.toml", "README.md", "specification.md", ".gitignore"):
             continue
+
         files_to_process.append(p)
 
     logger.info(f"Found {len(files_to_process)} files to organize.")
+    return files_to_process, by_date_dir
+
+
+def handle_by_date(args, config):
+    """
+    Phase 4: Organizes files into a 'by-date/YYYY-MM-DD/' directory structure based on EXIF date.
+
+    This function reads the 'DateTimeOriginal' tag from each file and moves it into a
+    date-stamped folder, renaming the file to match the timestamp (e.g., '2023-10-27--15-30-00.jpg').
+    """
+    logger.info("Running '4-by-date' command...")
+
+    files_to_process, by_date_dir = _collect_files_for_by_date(config, logger)
+
+    if not args.dry_run:
+        by_date_dir.mkdir(exist_ok=True)
     if not files_to_process:
         logger.info("'4-by-date' command complete. No files to process.")
         return
@@ -469,7 +600,14 @@ def handle_by_date(args, config):
 
 def handle_geotag(args, config):
     """
-    Applies GPS data to files from GPX tracks, skipping files that are already geotagged.
+    Phase 5: Applies GPS data to files from GPX tracks.
+
+    This command uses a directory of GPX track logs to add GPS coordinates to files
+    in the 'by-date' directory. It uses the 'DateTimeOriginal' tag to correlate the
+    file with the GPX track.
+
+    As a safety feature, it will automatically skip any files that already have
+    GPS data and will not overwrite it.
     """
     logger.info("Running '5-geotag' command...")
 
@@ -574,7 +712,12 @@ def handle_geotag(args, config):
 
 def handle_to_develop(args, config):
     """
-    Identifies folders that require further processing steps in a RAW development workflow.
+    Phase 6: Reports on files needing development work in a RAW -> TIF -> JPG workflow.
+
+    This command is for users with an advanced development workflow. It scans the
+    directory and generates a report on two conditions:
+    1. RAW files that are missing a corresponding TIF file.
+    2. TIF files that are missing a final, standard-output JPEG (named '__std.jpg').
     """
     logger.info("Running '6-to-develop' command...")
 
@@ -700,57 +843,66 @@ def main():
             "A tool for managing and processing photo and video collections.\n\n"
             "The workflow is broken down into numbered phases (subcommands).\n"
             "It is recommended to run them in order for a complete workflow, e.g.:\n"
-            "  1. 1-dedup         (Find and report duplicates)\n"
-            "  2. 2-timeshift     (Correct camera timestamps if needed)\n"
-            "  3. 3-pair-jpegs    (Separate RAW+JPEG pairs)\n"
-            "  4. 4-by-date       (Organize files into date-based folders)\n"
-            "  5. 5-geotag        (Add GPS data from GPX tracks)\n"
-            "  6. 6-to-develop    (Report on files needing development, e.g. RAW->TIF)"
+            "  1. dedup         (Find and report duplicates)\n"
+            "  2. timeshift     (Correct camera timestamps if needed)\n"
+            "  3. pair-jpegs    (Separate RAW+JPEG pairs)\n"
+            "  4. by-date       (Organize files into date-based folders)\n"
+            "  5. geotag        (Add GPS data from GPX tracks)\n"
+            "  6. to-develop    (Report on files needing development, e.g. RAW->TIF)"
         ),
-        epilog="Use 'photoflow.py <command> --help' for more information on a specific command.",
+        epilog="Use 'photoflow <command> --help' for more information on a specific command.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug output.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate actions without making any changes to files.")
 
-    subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands (phases)")
+    subparsers = parser.add_subparsers(dest="command", help="Available commands (phases)")
 
     # --- 1-dedup ---
     parser_dedup = subparsers.add_parser(
-        "1-dedup",
+        "dedup",
         help="Phase 1: Finds duplicate files and files with naming conflicts."
     )
     parser_dedup.set_defaults(func=handle_dedup)
 
     # --- 2-timeshift ---
     parser_timeshift = subparsers.add_parser(
-        "2-timeshift",
-        help="Phase 2: Shifts EXIF timestamps for a batch of files."
+        "timeshift",
+        help="Phase 2: Shifts EXIF timestamps for a batch of files.",
+        description="Corrects camera timestamps. You can specify the shift using --offset for advanced use, "
+                    "or with user-friendly flags like --hours and --minutes for simpler adjustments.",
+        formatter_class=argparse.RawTextHelpFormatter
     )
-    parser_timeshift.add_argument(
+    timeshift_group = parser_timeshift.add_argument_group(
+        "Time Shift Options", "Specify the time shift using one of the following methods"
+    )
+    timeshift_group.add_argument(
         "--offset",
-        required=True,
-        help="The time shift specification string (e.g., '+=1:30:0')."
+        help="The time shift specification string (e.g., '+=1:30:0' or '-=0:0:1 2:0:0'). For advanced use."
     )
+    timeshift_group.add_argument("--days", type=int, default=0, help="Number of days to shift (can be negative).")
+    timeshift_group.add_argument("--hours", type=int, default=0, help="Number of hours to shift (can be negative).")
+    timeshift_group.add_argument("--minutes", type=int, default=0, help="Number of minutes to shift (can be negative).")
+    timeshift_group.add_argument("--seconds", type=int, default=0, help="Number of seconds to shift (can be negative).")
     parser_timeshift.set_defaults(func=handle_timeshift)
 
     # --- 3-pair-jpegs ---
     parser_pair_jpegs = subparsers.add_parser(
-        "3-pair-jpegs",
+        "pair-jpegs",
         help="Phase 3: Identifies RAW+JPEG pairs and separates the JPEG file."
     )
     parser_pair_jpegs.set_defaults(func=handle_pair_jpegs)
 
     # --- 4-by-date ---
     parser_by_date = subparsers.add_parser(
-        "4-by-date",
+        "by-date",
         help="Phase 4: Organizes files into a YYYY-MM-DD directory structure."
     )
     parser_by_date.set_defaults(func=handle_by_date)
 
     # --- 5-geotag ---
     parser_geotag = subparsers.add_parser(
-        "5-geotag",
+        "geotag",
         help="Phase 5: Applies GPS data from GPX tracks."
     )
     parser_geotag.add_argument(
@@ -767,13 +919,18 @@ def main():
 
     # --- 6-to-develop ---
     parser_to_develop = subparsers.add_parser(
-        "6-to-develop",
+        "to-develop",
         help="Phase 6: Identifies folders that require further processing steps."
     )
     parser_to_develop.set_defaults(func=handle_to_develop)
 
     # --- Parse Arguments and Execute ---
     args = parser.parse_args()
+
+    # If no command is given, print help and exit gracefully.
+    if not hasattr(args, "command") or not args.command:
+        parser.print_help()
+        sys.exit(0)
 
     # Load configuration first to get workspace path
     config = load_or_create_config()

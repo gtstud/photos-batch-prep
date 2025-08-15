@@ -52,38 +52,38 @@ photoflow <subcommand> [options]
 
 ### 3.2. Subcommands
 
-#### `01-dedup`
+#### `dedup`
 - **Description:** Phase 1: Finds duplicate files and moves them to a trash directory.
 - **Functionality:**
   1. Scans the current directory recursively.
-  2. Calculates a checksum for each file, showing progress with `tqdm`.
-  3. Moves files that are exact duplicates (same name, size, and checksum) to the `duplicates_trash_dir`.
-  4. Generates a text report listing files that have the same name but different checksums.
+  2. Calculates a checksum for each file (based on size and content), showing progress with `tqdm`.
+  3. Moves files that are duplicates (identical content) to the `duplicates_trash_dir`. The first-encountered file is kept as the original.
+  4. Generates a text report listing files that have the same name but different checksums (conflicting versions).
 
-#### `02-timeshift`
+#### `timeshift`
 - **Description:** Phase 2: Shifts EXIF timestamps for a batch of files.
 - **Options:**
-  - `--offset "SPEC"`: The time shift specification string (e.g., `"+=1:30:0"`).
+  - `--days`, `--hours`, `--minutes`, `--seconds`: User-friendly flags to specify the shift (e.g., `--hours 2 --minutes -30`).
+  - `--offset "SPEC"`: The advanced `exiftool` time shift specification string (e.g., `"+=1:30:0"`).
 - **Functionality:**
-  1. Calls `exiftool -AllDates<OFFSET>` on all files, with a progress bar.
-  2. Sorts files into `_non_photos`, `_untagged_photos`, and `_originals` directories based on the outcome.
+  1. Calculates the final offset string based on the provided arguments.
+  2. Calls `exiftool -AllDates<OFFSET>` on all files, with a progress bar.
+  3. Sorts files into `_non_photos`, `_untagged_photos`, and `_originals` directories based on the outcome.
 
-#### `03-pair-jpegs`
+#### `pair-jpegs`
 - **Description:** Phase 3: Identifies RAW+JPEG pairs and separates the JPEG file.
 
-#### `04-by-date`
+#### `by-date`
 - **Description:** Phase 4: Organizes files into a `YYYY-MM-DD` directory structure.
 
-#### `05-geotag`
+#### `geotag`
 - **Description:** Phase 5: Applies GPS data to files from GPX tracks.
 - **Functionality (with overwrite protection):**
-  1. Scans all files in the `by-date` directory, with a progress bar.
-  2. **Safety Check:** Uses `exiftool` to identify files that already have GPS data.
-  3. Moves these files to a temporary `_already_geotagged` directory.
-  4. Runs `exiftool` to geotag the remaining files.
-  5. Moves the already-tagged files back.
+  1. Scans all files in the `by-date` directory.
+  2. **Safety Check:** Uses `exiftool` to identify files that already have GPS data. These files are excluded from the operation.
+  3. Runs `exiftool` to geotag the remaining files that do not have existing GPS data.
 
-#### `06-to-develop`
+#### `to-develop`
 - **Description:** Phase 6: Identifies folders that require further processing.
 
 ## 4. Logging and Reporting
