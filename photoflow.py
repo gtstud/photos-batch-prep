@@ -626,6 +626,14 @@ def handle_by_date(args, config):
     logger.info("'4-by-date' command complete.")
 
 
+CHUNK_SIZE = 50
+
+def _chunked_list(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+
 def _get_files_without_gps(files_to_check: list[Path]) -> tuple[list[Path], list[Path]]:
     """
     Scans a list of files and returns two lists: those with GPS data and those without.
@@ -638,15 +646,10 @@ def _get_files_without_gps(files_to_check: list[Path]) -> tuple[list[Path], list
 
     logger.info(f"Checking {len(files_to_check)} files for existing GPS data...")
 
-    def chunked_list(lst, n):
-        """Yield successive n-sized chunks from lst."""
-        for i in range(0, len(lst), n):
-            yield lst[i:i + n]
-
     try:
         with exiftool.ExifToolHelper() as et:
             with tqdm(total=len(files_to_check), desc="Checking for existing GPS") as pbar:
-                for chunk in chunked_list(files_to_check, 100):
+                for chunk in _chunked_list(files_to_check, CHUNK_SIZE):
                     try:
                         metadata_list = et.get_tags([str(p) for p in chunk], tags=["GPSLatitude"])
                         for i, metadata in enumerate(metadata_list):
@@ -721,16 +724,23 @@ def handle_geotag(args, config):
     if not args.dry_run:
         try:
             with exiftool.ExifToolHelper() as et:
-                params = ["-overwrite_original", "-P", geotime_arg, "-geotag", gpx_pattern]
-                files_str = [str(p) for p in files_to_geotag_pass1]
-                output = et.execute(*params, *files_str)
+                with tqdm(total=len(files_to_geotag_pass1), desc="Geotagging Pass 1") as pbar:
+                    for chunk in _chunked_list(files_to_geotag_pass1, CHUNK_SIZE):
+                        try:
+                            params = ["-overwrite_original", "-P", geotime_arg, "-geotag", gpx_pattern]
+                            files_str = [str(p) for p in chunk]
+                            output = et.execute(*params, *files_str)
 
-                updated_summary = re.search(r"(\d+) image files updated", output)
-                if updated_summary:
-                    pass1_updated_count = int(updated_summary.group(1))
-                logger.debug(f"Exiftool Pass 1 output:\n{output}")
-                if et.last_stderr:
-                    logger.warning(f"Exiftool Pass 1 reported errors:\n{et.last_stderr}")
+                            updated_summary = re.search(r"(\d+) image files updated", output)
+                            if updated_summary:
+                                pass1_updated_count += int(updated_summary.group(1))
+                            logger.debug(f"Exiftool Pass 1 output for chunk:\n{output}")
+                            if et.last_stderr:
+                                logger.warning(f"Exiftool Pass 1 reported errors for chunk:\n{et.last_stderr}")
+                        except Exception as e:
+                            logger.warning(f"Could not process a chunk of files during geotagging Pass 1: {e}")
+                        finally:
+                            pbar.update(len(chunk))
         except Exception as e:
             logger.error(f"An error occurred during geotagging Pass 1: {e}")
 
@@ -757,20 +767,27 @@ def handle_geotag(args, config):
         if not args.dry_run:
             try:
                 with exiftool.ExifToolHelper() as et:
-                    params = [
-                        "-api", "GeoMaxIntSecs=0",
-                        "-api", "GeoMaxExtSecs=86400",
-                        "-overwrite_original", "-P", geotime_arg, "-geotag", gpx_pattern
-                    ]
-                    files_str = [str(p) for p in files_in_last_gps]
-                    output = et.execute(*params, *files_str)
+                    with tqdm(total=len(files_in_last_gps), desc="Geotagging Pass 2") as pbar:
+                        for chunk in _chunked_list(files_in_last_gps, CHUNK_SIZE):
+                            try:
+                                params = [
+                                    "-api", "GeoMaxIntSecs=0",
+                                    "-api", "GeoMaxExtSecs=86400",
+                                    "-overwrite_original", "-P", geotime_arg, "-geotag", gpx_pattern
+                                ]
+                                files_str = [str(p) for p in chunk]
+                                output = et.execute(*params, *files_str)
 
-                    updated_summary = re.search(r"(\d+) image files updated", output)
-                    if updated_summary:
-                        pass2_updated_count = int(updated_summary.group(1))
-                    logger.debug(f"Exiftool Pass 2 output:\n{output}")
-                    if et.last_stderr:
-                        logger.warning(f"Exiftool Pass 2 reported errors:\n{et.last_stderr}")
+                                updated_summary = re.search(r"(\d+) image files updated", output)
+                                if updated_summary:
+                                    pass2_updated_count += int(updated_summary.group(1))
+                                logger.debug(f"Exiftool Pass 2 output for chunk:\n{output}")
+                                if et.last_stderr:
+                                    logger.warning(f"Exiftool Pass 2 reported errors for chunk:\n{et.last_stderr}")
+                            except Exception as e:
+                                logger.warning(f"Could not process a chunk of files during geotagging Pass 2: {e}")
+                            finally:
+                                pbar.update(len(chunk))
             except Exception as e:
                 logger.error(f"An error occurred during geotagging Pass 2: {e}")
 
