@@ -83,55 +83,67 @@ A default configuration looks like this:
 
 ## Workflow and Commands
 
-The tool is designed around a logical, numbered workflow. Here are the main commands:
+The script's commands are divided into two main groups:
 
-### 1. `dedup`
-Finds duplicate files.
-- **What it does:** Scans for files that have identical content (based on size and checksum, regardless of filename). The first-found file is kept, and subsequent duplicates are moved to a trash directory (`_duplicates_trash` by default). It also generates a report for files with the same name but different content.
+### Workflow Phases
+These commands are designed to be run in sequence for a complete photo management workflow, from initial cleanup to final organization.
+
+#### 1. `dedup`
+Finds and separates duplicate files.
+- **What it does:** Recursively scans all files in the current directory, regardless of type. It calculates a checksum for each file and moves duplicates to a trash directory (`_duplicates_trash` by default). It also generates a report for files with the same name but different content.
 
 ```bash
 photoflow dedup
 ```
 
-### 2. `timeshift`
+#### 2. `timeshift`
 Corrects the EXIF timestamps on your photos if the camera clock was wrong.
-- **Usage:** Provide a time shift using simple flags or an advanced offset string.
-  - To add 1 day and 2 hours: `photoflow timeshift --days 1 --hours 2`
-  - To subtract 30 minutes: `photoflow timeshift --minutes -30`
-- **Advanced Usage:** You can also provide a raw `exiftool` offset string. For example, to add 1 hour and 30 minutes:
-```bash
-photoflow timeshift --offset "+=0:0:0 1:30:0"
-```
+- **Usage:** `photoflow timeshift --days 1 --hours 2`
+- **Advanced Usage:** `photoflow timeshift --offset "+=0:0:0 1:30:0"`
 
-### 3. `pair-jpegs`
+#### 3. `pair-jpegs`
 For RAW+JPEG shooters, this command separates the "extra" JPEGs.
-- **What it does:** Finds RAW/JPEG pairs, verifies them, and moves the JPEG to an `_extra_jpgs` folder.
+- **What it does:** Finds RAW/JPEG pairs, verifies their metadata, and moves the JPEG to an `_extra_jpgs` folder.
 
 ```bash
 photoflow pair-jpegs
 ```
 
-### 4. `by-date`
+#### 4. `by-date`
 Organizes your cleaned-up files into a neat, date-based folder structure.
-- **What it does:** Moves all your photos and videos into a `by-date/YYYY-MM-DD/` directory structure.
+- **What it does:** Moves all your photos and videos into a `by-date/YYYY-MM-DD/` directory structure based on their EXIF timestamp.
 
 ```bash
 photoflow by-date
 ```
 
-### 5. `geotag`
+#### 5. `geotag`
 Applies GPS coordinates to your photos using a GPX track log.
-- **Safety Feature:** This command automatically detects and **skips** any files that are already geotagged. It **will not** overwrite existing GPS data.
+- **Two-Pass System:** This command now runs a two-pass process to maximize geotagging.
+  1.  **Pass 1 (Interpolation):** Applies GPS data using standard time-based interpolation.
+  2.  **Pass 2 (Extrapolation):** For any files that were not tagged, it makes a second attempt by assigning the most recent known GPS location (extrapolating up to 24 hours).
+- **Safety:** Automatically skips files that already have GPS data. Files successfully tagged in Pass 2 are moved to a `last-gps` folder for review. Any files that fail both passes are moved to a `no-gps` folder.
 - **Usage:**
 
 ```bash
 photoflow geotag --gpx-dir /path/to/gpx-files --timezone -05:00
 ```
 
-### 6. `to-develop`
+#### 6. `to-develop`
 For advanced workflows (e.g., RAW -> TIF -> JPG), this command identifies what work is left to do.
-- **What it does:** Scans your folders and reports which RAW files are missing a TIF, and which TIF files are missing a final standard JPEG.
+- **What it does:** Reports which RAW files are missing a TIF, and which TIF files are missing a final standard JPEG.
 
 ```bash
 photoflow to-develop
+```
+
+### Miscellaneous Commands
+These are standalone utility commands that can be run at any time.
+
+#### `move-no-gps`
+Finds and separates all photos that do not have any GPS information.
+- **What it does:** Recursively scans the current directory for photo files (e.g., JPG, RAW) and checks their metadata. Any photo without GPS tags is moved to a `non-gps` folder, preserving its original directory structure. This is useful for isolating files that need to be geotagged manually.
+
+```bash
+photoflow move-no-gps
 ```

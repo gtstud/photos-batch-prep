@@ -52,23 +52,25 @@ photoflow <subcommand> [options]
 
 ### 3.2. Subcommands
 
+The script's subcommands are organized into "Workflow Phases" and "Miscellaneous Commands" in the command-line interface.
+
 #### `dedup`
 - **Description:** Phase 1: Finds duplicate files and moves them to a trash directory.
 - **Functionality:**
-  1. Scans the current directory recursively.
-  2. Calculates a checksum for each file (based on size and content), showing progress with `tqdm`.
-  3. Moves files that are duplicates (identical content) to the `duplicates_trash_dir`. The first-encountered file is kept as the original.
-  4. Generates a text report listing files that have the same name but different checksums (conflicting versions).
+  1. Scans the current directory recursively for **all file types**.
+  2. Calculates a checksum for each file.
+  3. Moves files with identical content to the `duplicates_trash_dir`.
+  4. Generates a report for files with the same name but different checksums.
 
 #### `timeshift`
 - **Description:** Phase 2: Shifts EXIF timestamps for a batch of files.
 - **Options:**
-  - `--days`, `--hours`, `--minutes`, `--seconds`: User-friendly flags to specify the shift (e.g., `--hours 2 --minutes -30`).
-  - `--offset "SPEC"`: The advanced `exiftool` time shift specification string (e.g., `"+=1:30:0"`).
+  - `--days`, `--hours`, `--minutes`, `--seconds`: User-friendly flags to specify the shift.
+  - `--offset "SPEC"`: The advanced `exiftool` time shift specification string.
 - **Functionality:**
-  1. Calculates the final offset string based on the provided arguments.
-  2. Calls `exiftool -AllDates<OFFSET>` on all files, with a progress bar.
-  3. Sorts files into `_non_photos`, `_untagged_photos`, and `_originals` directories based on the outcome.
+  1. Calculates the final offset string.
+  2. Calls `exiftool -AllDates<OFFSET>` on all files.
+  3. Sorts files into output directories based on the outcome.
 
 #### `pair-jpegs`
 - **Description:** Phase 3: Identifies RAW+JPEG pairs and separates the JPEG file.
@@ -77,14 +79,23 @@ photoflow <subcommand> [options]
 - **Description:** Phase 4: Organizes files into a `YYYY-MM-DD` directory structure.
 
 #### `geotag`
-- **Description:** Phase 5: Applies GPS data to files from GPX tracks.
-- **Functionality (with overwrite protection):**
-  1. Scans all files in the `by-date` directory.
-  2. **Safety Check:** Uses `exiftool` to identify files that already have GPS data. These files are excluded from the operation.
-  3. Runs `exiftool` to geotag the remaining files that do not have existing GPS data.
+- **Description:** Phase 5: Applies GPS data to files from GPX tracks using a two-pass system.
+- **Functionality:**
+  1. **Initial Scan:** Identifies all files in the `by-date` directory that do not have GPS data.
+  2. **Pass 1 (Interpolation):** Runs `exiftool` with standard `-geotag` options.
+  3. **Re-scan and Move:** Identifies files that failed Pass 1 and moves them to the `last-gps` directory, preserving their relative path.
+  4. **Pass 2 (Extrapolation):** Runs `exiftool` on the files in `last-gps` with `-api GeoMaxIntSecs=0 -api GeoMaxExtSecs=86400` to apply the last known location.
+  5. **Final Move:** Any files that still lack GPS data are moved from `last-gps` to a `no-gps` directory.
 
 #### `to-develop`
 - **Description:** Phase 6: Identifies folders that require further processing.
+
+#### `move-no-gps`
+- **Description:** Miscellaneous: Moves all photo files without GPS data to a `non-gps` directory.
+- **Functionality:**
+  1. Recursively scans the current directory for photo files (based on `file_formats` in config).
+  2. Uses `exiftool` to check for `GPSLatitude`.
+  3. Moves any photo file without GPS data to the `non-gps` subfolder, preserving the directory structure.
 
 ## 4. Logging and Reporting
 
