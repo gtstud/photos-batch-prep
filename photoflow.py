@@ -1004,6 +1004,9 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
+    # --- Phased Commands ---
+    phase_parsers = subparsers.add_parser_group("Workflow Phases", "Recommended sequence of operations")
+
     # --- 1-dedup ---
     parser_dedup = phase_parsers.add_parser(
         "dedup",
@@ -1070,8 +1073,11 @@ def main():
     )
     parser_to_develop.set_defaults(func=handle_to_develop)
 
+    # --- Miscellaneous Commands ---
+    misc_parsers = subparsers.add_parser_group("Miscellaneous Commands", "Other utility commands")
+
     # --- move-no-gps ---
-    parser_move_no_gps = subparsers.add_parser(
+    parser_move_no_gps = misc_parsers.add_parser(
         "move-no-gps",
         help="Moves all photo files with no GPS data to a 'non-gps' folder."
     )
