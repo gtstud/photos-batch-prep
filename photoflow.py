@@ -100,7 +100,7 @@ def _scan_and_hash_files(exclude_dirs: set[Path], checksum_algo: str, logger) ->
         - file_data: A list of dictionaries, each with info about a file.
         - files_by_name: A defaultdict grouping file_info dicts by filename.
     """
-    logger.info("Scanning files and calculating checksums...")
+    logger.info("Scanning all files recursively in the current directory...")
     file_data = []
     files_by_name = defaultdict(list)
     files_to_scan = []
@@ -231,6 +231,34 @@ def handle_dedup(args, config):
 
     logger.info("'1-dedup' command complete.")
 
+
+def _move_file_preserving_structure(source_path: Path, dest_root: Path, base_dir: Path, dry_run: bool):
+    """
+    Moves a file to a new root directory, preserving its relative path from a base directory.
+    e.g., move 'base/sub/file.txt' to 'dest/sub/file.txt'
+    """
+    if not source_path.exists():
+        return None
+
+    try:
+        relative_path = source_path.relative_to(base_dir)
+    except ValueError:
+        logger.warning(f"Could not determine relative path for {source_path} from {base_dir}. Skipping.")
+        return None
+
+    destination_path = dest_root / relative_path
+
+    if dry_run:
+        logger.info(f"DRY RUN: Would move '{source_path}' to '{destination_path}'")
+        return destination_path
+
+    try:
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(source_path, destination_path)
+        return destination_path
+    except OSError as e:
+        logger.error(f"Error moving file {source_path} to {destination_path}: {e}")
+        return None
 
 def _move_file_robustly(source_path: Path, target_dir: Path, dry_run: bool, new_base_name: str = None):
     """Moves a file, handling name collisions by adding a counter."""
@@ -598,19 +626,55 @@ def handle_by_date(args, config):
     logger.info("'4-by-date' command complete.")
 
 
+def _get_files_without_gps(files_to_check: list[Path]) -> tuple[list[Path], list[Path]]:
+    """
+    Scans a list of files and returns two lists: those with GPS data and those without.
+    """
+    files_with_gps = []
+    files_without_gps = []
+
+    if not files_to_check:
+        return [], []
+
+    logger.info(f"Checking {len(files_to_check)} files for existing GPS data...")
+
+    def chunked_list(lst, n):
+        """Yield successive n-sized chunks from lst."""
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+
+    try:
+        with exiftool.ExifToolHelper() as et:
+            with tqdm(total=len(files_to_check), desc="Checking for existing GPS") as pbar:
+                for chunk in chunked_list(files_to_check, 100):
+                    try:
+                        metadata_list = et.get_tags([str(p) for p in chunk], tags=["GPSLatitude"])
+                        for i, metadata in enumerate(metadata_list):
+                            if "EXIF:GPSLatitude" in metadata or "Composite:GPSLatitude" in metadata:
+                                files_with_gps.append(chunk[i])
+                            else:
+                                files_without_gps.append(chunk[i])
+                    except Exception as e:
+                        logger.warning(f"Could not process a chunk of files while checking for GPS: {e}")
+                    finally:
+                        pbar.update(len(chunk))
+    except Exception as e:
+        logger.error(f"Failed to read EXIF data with pyexiftool: {e}")
+        # If we fail here, assume no files can be processed.
+        return files_to_check, []
+
+    return files_with_gps, files_without_gps
+
+
 def handle_geotag(args, config):
     """
-    Phase 5: Applies GPS data to files from GPX tracks.
-
-    This command uses a directory of GPX track logs to add GPS coordinates to files
-    in the 'by-date' directory. It uses the 'DateTimeOriginal' tag to correlate the
-    file with the GPX track.
-
-    As a safety feature, it will automatically skip any files that already have
-    GPS data and will not overwrite it.
+    Phase 5: Applies GPS data from GPX tracks using a two-pass approach.
+    Pass 1: Standard interpolation.
+    Pass 2: Extrapolation for remaining files (last known location).
     """
     logger.info("Running '5-geotag' command...")
 
+    # --- 1. Setup and Pre-flight Checks ---
     gpx_dir = Path(args.gpx_dir)
     if not gpx_dir.is_dir():
         logger.error(f"GPX directory not found at '{gpx_dir}'")
@@ -623,8 +687,14 @@ def handle_geotag(args, config):
 
     target_dir = Path.cwd() / "by-date"
     if not target_dir.is_dir():
-        logger.error(f"Target directory '{target_dir.name}' not found. Please run '04-by-date' first.")
+        logger.error(f"Target directory '{target_dir.name}' not found. Please run '4-by-date' first.")
         return 1
+
+    last_gps_dir = Path.cwd() / "last-gps"
+    no_gps_dir = Path.cwd() / "no-gps"
+    if not args.dry_run:
+        last_gps_dir.mkdir(exist_ok=True)
+        no_gps_dir.mkdir(exist_ok=True)
 
     all_files = [p for p in target_dir.rglob("*") if p.is_file()]
     logger.info(f"Found {len(all_files)} total files in '{target_dir.name}'.")
@@ -632,81 +702,95 @@ def handle_geotag(args, config):
         logger.info("'5-geotag' command complete.")
         return
 
-    files_to_geotag = []
-    already_tagged_count = 0
+    # --- 2. Initial Scan for GPS Data ---
+    already_tagged, files_to_geotag_pass1 = _get_files_without_gps(all_files)
+    logger.info(f"Found {len(already_tagged)} files that are already geotagged and will be skipped.")
 
-    logger.info("Checking for existing GPS data...")
-
-    def chunked_list(lst, n):
-        """Yield successive n-sized chunks from lst."""
-        for i in range(0, len(lst), n):
-            yield lst[i:i + n]
-
-    try:
-        with exiftool.ExifToolHelper() as et:
-            with tqdm(total=len(all_files), desc="Checking for existing GPS") as pbar:
-                for chunk in chunked_list(all_files, 50):
-                    try:
-                        metadata_list = et.get_tags([str(p) for p in chunk], tags=["GPSLatitude"])
-                        for i, metadata in enumerate(metadata_list):
-                            if "EXIF:GPSLatitude" in metadata or "Composite:GPSLatitude" in metadata:
-                                already_tagged_count += 1
-                            else:
-                                files_to_geotag.append(chunk[i])
-                    except Exception as e:
-                        logger.warning(f"Could not process a chunk of files: {e}")
-                    finally:
-                        pbar.update(len(chunk))
-    except Exception as e:
-        logger.error(f"Failed to read EXIF data with pyexiftool: {e}")
+    if not files_to_geotag_pass1:
+        logger.info("No new files to geotag.")
+        logger.info("'5-geotag' command complete.")
         return
 
-    logger.info(f"Found {already_tagged_count} files that are already geotagged and will be skipped.")
+    # --- 3. Pass 1: Standard Geotagging (Interpolation) ---
+    logger.info(f"--- Pass 1: Attempting to geotag {len(files_to_geotag_pass1)} files using standard interpolation. ---")
 
-    if not files_to_geotag:
-        logger.info("No new files to geotag.")
-        updated_count = 0
-    elif args.dry_run:
-        logger.info(f"DRY RUN: Would attempt to geotag {len(files_to_geotag)} files.")
-        updated_count = 0
-    else:
-        logger.info(f"Attempting to geotag {len(files_to_geotag)} files...")
-        geotime_arg = f"-geotime<${{DateTimeOriginal}}{args.timezone}"
-        gpx_pattern = str(gpx_dir.resolve() / "*.gpx")
-        updated_count = 0
+    geotime_arg = f"-geotime<${{DateTimeOriginal}}{args.timezone}"
+    gpx_pattern = str(gpx_dir.resolve() / "*.gpx")
+    pass1_updated_count = 0
 
+    if not args.dry_run:
         try:
             with exiftool.ExifToolHelper() as et:
-                with tqdm(total=len(files_to_geotag), desc="Applying geotags") as pbar:
-                    for chunk in chunked_list(files_to_geotag, 50):
-                        try:
-                            params = [
-                                "-overwrite_original",
-                                "-P",
-                                geotime_arg,
-                                "-geotag",
-                                gpx_pattern,
-                            ]
-                            files_to_geotag_str = [str(p) for p in chunk]
-                            output = et.execute(*params, *files_to_geotag_str)
+                params = ["-overwrite_original", "-P", geotime_arg, "-geotag", gpx_pattern]
+                files_str = [str(p) for p in files_to_geotag_pass1]
+                output = et.execute(*params, *files_str)
 
-                            updated_summary = re.search(r"(\d+) image files updated", output)
-                            if updated_summary:
-                                updated_count += int(updated_summary.group(1))
-
-                            logger.debug(f"Exiftool output:\n{output}")
-                            if et.last_stderr:
-                                logger.warning(f"Exiftool reported errors:\n{et.last_stderr}")
-                        except Exception as e:
-                            logger.warning(f"Could not process a chunk of files for geotagging: {e}")
-                        finally:
-                            pbar.update(len(chunk))
+                updated_summary = re.search(r"(\d+) image files updated", output)
+                if updated_summary:
+                    pass1_updated_count = int(updated_summary.group(1))
+                logger.debug(f"Exiftool Pass 1 output:\n{output}")
+                if et.last_stderr:
+                    logger.warning(f"Exiftool Pass 1 reported errors:\n{et.last_stderr}")
         except Exception as e:
-            logger.error(f"An error occurred while running exiftool for geotagging: {e}")
+            logger.error(f"An error occurred during geotagging Pass 1: {e}")
 
+    # --- 4. Re-scan and Move for Pass 2 ---
+    logger.info("Checking for files that were not geotagged in Pass 1.")
+    _, files_for_pass2 = _get_files_without_gps(files_to_geotag_pass1)
+
+    logger.info(f"Moving {len(files_for_pass2)} files that failed Pass 1 to '{last_gps_dir.name}'.")
+    moved_to_last_gps_count = 0
+    files_in_last_gps = []
+    for f in files_for_pass2:
+        moved_path = _move_file_preserving_structure(f, last_gps_dir, target_dir.parent, args.dry_run)
+        if moved_path:
+            moved_to_last_gps_count += 1
+            files_in_last_gps.append(moved_path)
+
+    if not files_in_last_gps:
+        logger.info("No files needed to be moved for Pass 2.")
+
+    # --- 5. Pass 2: Extrapolation Geotagging ---
+    pass2_updated_count = 0
+    if files_in_last_gps:
+        logger.info(f"--- Pass 2: Attempting to geotag {len(files_in_last_gps)} files using extrapolation. ---")
+        if not args.dry_run:
+            try:
+                with exiftool.ExifToolHelper() as et:
+                    params = [
+                        "-api", "GeoMaxIntSecs=0",
+                        "-api", "GeoMaxExtSecs=86400",
+                        "-overwrite_original", "-P", geotime_arg, "-geotag", gpx_pattern
+                    ]
+                    files_str = [str(p) for p in files_in_last_gps]
+                    output = et.execute(*params, *files_str)
+
+                    updated_summary = re.search(r"(\d+) image files updated", output)
+                    if updated_summary:
+                        pass2_updated_count = int(updated_summary.group(1))
+                    logger.debug(f"Exiftool Pass 2 output:\n{output}")
+                    if et.last_stderr:
+                        logger.warning(f"Exiftool Pass 2 reported errors:\n{et.last_stderr}")
+            except Exception as e:
+                logger.error(f"An error occurred during geotagging Pass 2: {e}")
+
+    # --- 6. Final Scan and Move Failures ---
+    logger.info("Checking for files that were not geotagged in Pass 2.")
+    _, final_failures = _get_files_without_gps(files_in_last_gps)
+
+    logger.info(f"Moving {len(final_failures)} files that failed Pass 2 to '{no_gps_dir.name}'.")
+    moved_to_no_gps_count = 0
+    for f in final_failures:
+        if _move_file_preserving_structure(f, no_gps_dir, last_gps_dir.parent, args.dry_run):
+            moved_to_no_gps_count += 1
+
+    # --- 7. Summary ---
     logger.info("\n--- Geotag Summary ---")
-    logger.info(f"Files skipped (already had GPS data): {already_tagged_count}")
-    logger.info(f"Files successfully geotagged in this run: {updated_count}")
+    logger.info(f"Files skipped (already had GPS data): {len(already_tagged)}")
+    logger.info(f"Files geotagged in Pass 1 (interpolation): {pass1_updated_count}")
+    logger.info(f"Files moved to '{last_gps_dir.name}' for Pass 2: {moved_to_last_gps_count}")
+    logger.info(f"Files geotagged in Pass 2 (extrapolation): {pass2_updated_count}")
+    logger.info(f"Files that could not be geotagged (moved to '{no_gps_dir.name}'): {moved_to_no_gps_count}")
     logger.info("'5-geotag' command complete.")
 
 
@@ -783,6 +867,65 @@ def handle_to_develop(args, config):
     logger.info("\n'6-to-develop' command complete.")
 
 
+def handle_move_no_gps(args, config):
+    """
+    Miscellaneous: Moves all photo files recursively that have no GPS information to a 'non-gps' subfolder.
+    """
+    logger.info("Running 'move-no-gps' command...")
+
+    non_gps_dir = Path.cwd() / "non-gps"
+    if not args.dry_run:
+        non_gps_dir.mkdir(exist_ok=True)
+
+    photo_ext = tuple(f".{ext}".lower() for ext in config["file_formats"]["raw"] + config["file_formats"]["image"])
+
+    # Collect all files first
+    all_files = [p for p in Path.cwd().rglob("*") if p.is_file()]
+
+    # Filter for photo files, excluding files already in the destination directory
+    files_to_check = []
+    for p in all_files:
+        if str(p.resolve()).startswith(str(non_gps_dir.resolve())):
+            continue
+        if p.suffix.lower() in photo_ext:
+            files_to_check.append(p)
+
+    logger.info(f"Found {len(files_to_check)} photo files to check for GPS data.")
+    if not files_to_check:
+        logger.info("'move-no-gps' command complete.")
+        return
+
+    moved_count = 0
+
+    def chunked_list(lst, n):
+        """Yield successive n-sized chunks from lst."""
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+
+    try:
+        with exiftool.ExifToolHelper() as et:
+            with tqdm(total=len(files_to_check), desc="Checking for GPS data") as pbar:
+                for chunk in chunked_list(files_to_check, 100):
+                    try:
+                        metadata_list = et.get_tags([str(p) for p in chunk], tags=["GPSLatitude"])
+                        for metadata in metadata_list:
+                            source_file = Path(metadata["SourceFile"])
+                            if "EXIF:GPSLatitude" not in metadata and "Composite:GPSLatitude" not in metadata:
+                                if _move_file_preserving_structure(source_file, non_gps_dir, Path.cwd(), args.dry_run):
+                                    moved_count += 1
+                    except Exception as e:
+                        logger.warning(f"Could not process a chunk of files: {e}")
+                    finally:
+                        pbar.update(len(chunk))
+    except Exception as e:
+        logger.error(f"An error occurred during 'move-no-gps' processing: {e}")
+        return
+
+    logger.info("\n--- Move No-GPS Summary ---")
+    logger.info(f"Moved {moved_count} files without GPS data to '{non_gps_dir.name}'.")
+    logger.info("'move-no-gps' command complete.")
+
+
 # --- Helper Functions for Robustness ---
 
 def check_dependencies():
@@ -841,14 +984,17 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "A tool for managing and processing photo and video collections.\n\n"
-            "The workflow is broken down into numbered phases (subcommands).\n"
-            "It is recommended to run them in order for a complete workflow, e.g.:\n"
-            "  1. dedup         (Find and report duplicates)\n"
-            "  2. timeshift     (Correct camera timestamps if needed)\n"
+            "The commands are broken down into two groups:\n\n"
+            "--- Workflow Phases ---\n"
+            "A recommended, numbered sequence of operations for a full workflow:\n"
+            "  1. dedup         (Find and separate duplicate files of any type)\n"
+            "  2. timeshift     (Correct EXIF timestamps if a camera clock was wrong)\n"
             "  3. pair-jpegs    (Separate RAW+JPEG pairs)\n"
-            "  4. by-date       (Organize files into date-based folders)\n"
-            "  5. geotag        (Add GPS data from GPX tracks)\n"
-            "  6. to-develop    (Report on files needing development, e.g. RAW->TIF)"
+            "  4. by-date       (Organize files into a date-based folder structure)\n"
+            "  5. geotag        (Add GPS data from GPX tracks using a two-pass system)\n"
+            "  6. to-develop    (Report on files needing development, e.g. RAW->TIF)\n\n"
+            "--- Miscellaneous Commands ---\n"
+            "  move-no-gps    (Find and separate any photos that have no GPS data)"
         ),
         epilog="Use 'photoflow <command> --help' for more information on a specific command.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -856,17 +1002,20 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug output.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate actions without making any changes to files.")
 
-    subparsers = parser.add_subparsers(dest="command", help="Available commands (phases)")
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # --- Phased Commands ---
+    phase_parsers = subparsers.add_parser_group("Workflow Phases", "Recommended sequence of operations")
 
     # --- 1-dedup ---
-    parser_dedup = subparsers.add_parser(
+    parser_dedup = phase_parsers.add_parser(
         "dedup",
         help="Phase 1: Finds duplicate files and files with naming conflicts."
     )
     parser_dedup.set_defaults(func=handle_dedup)
 
     # --- 2-timeshift ---
-    parser_timeshift = subparsers.add_parser(
+    parser_timeshift = phase_parsers.add_parser(
         "timeshift",
         help="Phase 2: Shifts EXIF timestamps for a batch of files.",
         description="Corrects camera timestamps. You can specify the shift using --offset for advanced use, "
@@ -887,21 +1036,21 @@ def main():
     parser_timeshift.set_defaults(func=handle_timeshift)
 
     # --- 3-pair-jpegs ---
-    parser_pair_jpegs = subparsers.add_parser(
+    parser_pair_jpegs = phase_parsers.add_parser(
         "pair-jpegs",
         help="Phase 3: Identifies RAW+JPEG pairs and separates the JPEG file."
     )
     parser_pair_jpegs.set_defaults(func=handle_pair_jpegs)
 
     # --- 4-by-date ---
-    parser_by_date = subparsers.add_parser(
+    parser_by_date = phase_parsers.add_parser(
         "by-date",
         help="Phase 4: Organizes files into a YYYY-MM-DD directory structure."
     )
     parser_by_date.set_defaults(func=handle_by_date)
 
     # --- 5-geotag ---
-    parser_geotag = subparsers.add_parser(
+    parser_geotag = phase_parsers.add_parser(
         "geotag",
         help="Phase 5: Applies GPS data from GPX tracks."
     )
@@ -918,11 +1067,22 @@ def main():
     parser_geotag.set_defaults(func=handle_geotag)
 
     # --- 6-to-develop ---
-    parser_to_develop = subparsers.add_parser(
+    parser_to_develop = phase_parsers.add_parser(
         "to-develop",
         help="Phase 6: Identifies folders that require further processing steps."
     )
     parser_to_develop.set_defaults(func=handle_to_develop)
+
+    # --- Miscellaneous Commands ---
+    misc_parsers = subparsers.add_parser_group("Miscellaneous Commands", "Other utility commands")
+
+    # --- move-no-gps ---
+    parser_move_no_gps = misc_parsers.add_parser(
+        "move-no-gps",
+        help="Moves all photo files with no GPS data to a 'non-gps' folder."
+    )
+    parser_move_no_gps.set_defaults(func=handle_move_no_gps)
+
 
     # --- Parse Arguments and Execute ---
     args = parser.parse_args()
