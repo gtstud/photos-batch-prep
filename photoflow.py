@@ -1005,14 +1005,14 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # --- 1-dedup ---
-    parser_dedup = subparsers.add_parser(
+    parser_dedup = phase_parsers.add_parser(
         "dedup",
         help="Phase 1: Finds duplicate files and files with naming conflicts."
     )
     parser_dedup.set_defaults(func=handle_dedup)
 
     # --- 2-timeshift ---
-    parser_timeshift = subparsers.add_parser(
+    parser_timeshift = phase_parsers.add_parser(
         "timeshift",
         help="Phase 2: Shifts EXIF timestamps for a batch of files.",
         description="Corrects camera timestamps. You can specify the shift using --offset for advanced use, "
@@ -1033,21 +1033,21 @@ def main():
     parser_timeshift.set_defaults(func=handle_timeshift)
 
     # --- 3-pair-jpegs ---
-    parser_pair_jpegs = subparsers.add_parser(
+    parser_pair_jpegs = phase_parsers.add_parser(
         "pair-jpegs",
         help="Phase 3: Identifies RAW+JPEG pairs and separates the JPEG file."
     )
     parser_pair_jpegs.set_defaults(func=handle_pair_jpegs)
 
     # --- 4-by-date ---
-    parser_by_date = subparsers.add_parser(
+    parser_by_date = phase_parsers.add_parser(
         "by-date",
         help="Phase 4: Organizes files into a YYYY-MM-DD directory structure."
     )
     parser_by_date.set_defaults(func=handle_by_date)
 
     # --- 5-geotag ---
-    parser_geotag = subparsers.add_parser(
+    parser_geotag = phase_parsers.add_parser(
         "geotag",
         help="Phase 5: Applies GPS data from GPX tracks."
     )
@@ -1064,7 +1064,7 @@ def main():
     parser_geotag.set_defaults(func=handle_geotag)
 
     # --- 6-to-develop ---
-    parser_to_develop = subparsers.add_parser(
+    parser_to_develop = phase_parsers.add_parser(
         "to-develop",
         help="Phase 6: Identifies folders that require further processing steps."
     )
