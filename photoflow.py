@@ -984,15 +984,17 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "A tool for managing and processing photo and video collections.\n\n"
-            "The tool is broken down into two types of commands:\n"
-            "1. Workflow Phases: A recommended, numbered sequence of operations for a full workflow.\n"
-            "2. Miscellaneous Commands: Standalone utility commands.\n\n"
-            "Example Workflow:\n"
-            "  photoflow dedup\n"
-            "  photoflow timeshift --hours -1\n"
-            "  photoflow pair-jpegs\n"
-            "  photoflow by-date\n"
-            "  photoflow geotag --gpx-dir ./gpx --timezone -05:00\n"
+            "The commands are broken down into two groups:\n\n"
+            "--- Workflow Phases ---\n"
+            "A recommended, numbered sequence of operations for a full workflow:\n"
+            "  1. dedup         (Find and separate duplicate files of any type)\n"
+            "  2. timeshift     (Correct EXIF timestamps if a camera clock was wrong)\n"
+            "  3. pair-jpegs    (Separate RAW+JPEG pairs)\n"
+            "  4. by-date       (Organize files into a date-based folder structure)\n"
+            "  5. geotag        (Add GPS data from GPX tracks using a two-pass system)\n"
+            "  6. to-develop    (Report on files needing development, e.g. RAW->TIF)\n\n"
+            "--- Miscellaneous Commands ---\n"
+            "  move-no-gps    (Find and separate any photos that have no GPS data)"
         ),
         epilog="Use 'photoflow <command> --help' for more information on a specific command.",
         formatter_class=argparse.RawTextHelpFormatter
