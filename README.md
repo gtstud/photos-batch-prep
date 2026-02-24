@@ -71,7 +71,7 @@ A default configuration looks like this:
   "workspace_dir": "_photo_workspace",
   "duplicates_trash_dir": "_duplicates_trash",
   "file_formats": {
-    "raw": ["srw", "cr2", "nef", "arw", "dng"],
+    "raw": ["srw", "cr2", "nef", "arw", "dng", "srf"],
     "image": ["jpg", "jpeg", "png", "tif", "tiff", "heic"],
     "video": ["mp4", "mov", "avi", "mts"]
   },
@@ -130,8 +130,8 @@ photoflow geotag --gpx-dir /path/to/gpx-files --timezone -05:00
 ```
 
 #### 6. `to-develop`
-For advanced workflows (e.g., RAW -> TIF -> JPG), this command identifies what work is left to do.
-- **What it does:** Reports which RAW files are missing a TIF, and which TIF files are missing a final standard JPEG.
+For advanced workflows (e.g., RAW -> TIF -> __std.tif), this command identifies what work is left to do.
+- **What it does:** Reports which RAW files are missing a TIF, and which TIF files are missing a final standard TIF (`*__std.tif`).
 
 ```bash
 photoflow to-develop
