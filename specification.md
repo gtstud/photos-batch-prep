@@ -89,6 +89,9 @@ The script's subcommands are organized into "Workflow Phases" and "Miscellaneous
 
 #### `to-develop`
 - **Description:** Phase 6: Identifies folders that require further processing.
+- **Functionality:**
+  1. Checks for RAW files (including `.srf`) that are missing a corresponding TIF file.
+  2. Checks for TIF files that are missing a final standard TIF (`*__std.tif`).
 
 #### `move-no-gps`
 - **Description:** Miscellaneous: Moves all photo files without GPS data to a `non-gps` directory.
