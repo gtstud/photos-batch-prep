@@ -38,7 +38,7 @@ def get_default_config() -> dict:
         "workspace_dir": "_photo_workspace",
         "duplicates_trash_dir": "_duplicates_trash",
         "file_formats": {
-            "raw": ["srw", "cr2", "nef", "arw", "dng"],
+            "raw": ["srw", "cr2", "nef", "arw", "dng", "srf"],
             "image": ["jpg", "jpeg", "png", "tif", "tiff", "heic"],
             "video": ["mp4", "mov", "avi", "mts"],
         },
@@ -813,12 +813,12 @@ def handle_geotag(args, config):
 
 def handle_to_develop(args, config):
     """
-    Phase 6: Reports on files needing development work in a RAW -> TIF -> JPG workflow.
+    Phase 6: Reports on files needing development work in a RAW -> TIF -> TIF workflow.
 
     This command is for users with an advanced development workflow. It scans the
     directory and generates a report on two conditions:
-    1. RAW files that are missing a corresponding TIF file.
-    2. TIF files that are missing a final, standard-output JPEG (named '__std.jpg').
+    1. RAW files that are missing a corresponding TIF file in the same directory.
+    2. TIF files that are missing a final, standard-output TIF (named '__std.tif') in the same directory.
     """
     logger.info("Running '6-to-develop' command...")
 
@@ -837,7 +837,9 @@ def handle_to_develop(args, config):
 
         tif_found = False
         for tif_ext in tif_exts:
-            if any(raw_dir.rglob(f"{raw_stem}{tif_ext}")):
+            target = raw_dir / f"{raw_stem}{tif_ext}"
+            # Check for TIF in the same directory
+            if target.exists():
                 tif_found = True
                 break
 
@@ -846,40 +848,44 @@ def handle_to_develop(args, config):
 
     logger.info(f"Found {len(folders_missing_tifs)} folders with RAW files needing TIF generation.")
 
-    logger.info("Stage 2: Checking for TIF files missing Standard JPG counterparts...")
-    folders_missing_std_jpgs = set()
+    logger.info("Stage 2: Checking for TIF files missing Standard TIF counterparts...")
+    folders_missing_std_tifs = set()
     all_tif_files = []
     for ext in tif_exts:
         all_tif_files.extend(Path.cwd().rglob(f"*{ext}"))
 
-    for tif_path in tqdm(all_tif_files, desc="Checking TIF->JPG"):
+    for tif_path in tqdm(all_tif_files, desc="Checking TIF->STD"):
+        # Exclude files that are already standard output files
+        if "__std" in tif_path.name:
+            continue
+
         tif_stem = tif_path.stem
         tif_dir = tif_path.parent
-        parent_of_tif_dir = tif_dir.parent
 
-        expected_jpg_name = f"{tif_stem}__std.jpg"
-        expected_jpg_path = parent_of_tif_dir / expected_jpg_name
+        # Check for standard TIF in the same directory
+        expected_std_name = f"{tif_stem}__std.tif"
+        expected_std_path = tif_dir / expected_std_name
 
-        if not expected_jpg_path.exists():
-            folders_missing_std_jpgs.add(tif_dir)
+        if not expected_std_path.exists():
+            folders_missing_std_tifs.add(tif_dir)
 
-    logger.info(f"Found {len(folders_missing_std_jpgs)} folders with TIF files needing Standard JPG generation.")
+    logger.info(f"Found {len(folders_missing_std_tifs)} folders with TIF files needing Standard TIF generation.")
 
     logger.info("\n--- To-Develop Summary ---")
 
     if folders_missing_tifs:
-        logger.info("\nFolders needing TIF/TIFF generation (SRW found, TIF/TIFF missing):")
+        logger.info("\nFolders needing TIF/TIFF generation (RAW found, TIF/TIFF missing):")
         for folder in sorted(list(folders_missing_tifs)):
             logger.info(f"  {folder}")
     else:
         logger.info("\nNo folders found needing TIF/TIFF generation.")
 
-    if folders_missing_std_jpgs:
-        logger.info("\nFolders needing Standard JPG generation (TIF/TIFF found, *__std.jpg missing):")
-        for folder in sorted(list(folders_missing_std_jpgs)):
+    if folders_missing_std_tifs:
+        logger.info("\nFolders needing Standard TIF generation (TIF/TIFF found, *__std.tif missing):")
+        for folder in sorted(list(folders_missing_std_tifs)):
             logger.info(f"  {folder}")
     else:
-        logger.info("\nNo folders found needing Standard JPG generation.")
+        logger.info("\nNo folders found needing Standard TIF generation.")
 
     logger.info("\n'6-to-develop' command complete.")
 
